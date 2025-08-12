@@ -1,0 +1,4194 @@
+include { FASTQS     } from '../subworkflows/nf-core/fastqc'
+include { ALIGN      } from '../subworkflows/nf-core/align'
+include { VARIANT    } from '../subworkflows/nf-core/variant'
+include { POPULATION } from '../subworkflows/nf-core/population'
+include { ANNOTATION } from '../subworkflows/nf-core/annotation'
+include { STRUCTURE  } from '../subworkflows/nf-core/structure'
+include { PCA        } from '../subworkflows/nf-core/pca'
+include { GWAS       } from '../subworkflows/nf-core/gwas'
+
+
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    PRINT PARAMS SUMMARY
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+
+include { paramsSummaryLog; paramsSummaryMap } from 'plugin/nf-validation'
+
+def logo = NfcoreTemplate.logo(workflow, params.monochrome_logs)
+def citation = '\n' + WorkflowMain.citation(workflow) + '\n'
+def summary_params = paramsSummaryMap(workflow)
+
+// Print parameter summary log to screen
+log.info logo + paramsSummaryLog(workflow) + citation
+
+WorkflowTest.initialise(params, log)
+
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    CONFIG FILES
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+
+ch_multiqc_config          = Channel.fromPath("$projectDir/assets/multiqc_config.yml", checkIfExists: true)
+ch_multiqc_custom_config   = params.multiqc_config ? Channel.fromPath( params.multiqc_config, checkIfExists: true ) : Channel.empty()
+ch_multiqc_logo            = params.multiqc_logo   ? Channel.fromPath( params.multiqc_logo, checkIfExists: true ) : Channel.empty()
+ch_multiqc_custom_methods_description = params.multiqc_methods_description ? file(params.multiqc_methods_description, checkIfExists: true) : file("$projectDir/assets/methods_description_template.yml", checkIfExists: true)
+
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    IMPORT LOCAL MODULES/SUBWORKFLOWS
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+include { SAMTOOLS_INDEX as SAMTOOLS_INDEX_MAPPING         } from '../modules/nf-core/samtools/index/main'
+
+
+
+
+//
+// SUBWORKFLOW: Consisting of a mix of local and nf-core/modules
+//
+include { INPUT_CHECK                      } from '../subworkflows/local/input_check'
+include { INPUT_CHECK as INPUT_CHECK_BAM   } from '../subworkflows/local/input_check'
+ 
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    RUN MAIN WORKFLOW
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+
+// Info required for completion email and summary
+    def multiqc_report = []
+
+workflow TEST {
+	
+    main:
+
+    ch_versions = Channel.empty()
+     
+    processList = params.processList.split(',')
+    start =  processList[0]
+
+    if (start == "A"){
+        INPUT_CHECK (
+        file(params.input)
+   	     )
+ 	    ch_versions = ch_versions.mix(INPUT_CHECK.out.versions)
+
+        INPUT_CHECK.out.reads.view()	
+        FASTQS(
+                INPUT_CHECK.out.reads,
+                params.adapter_fasta,
+                params.save_trimmed_fail,
+                params.save_merged
+            )
+
+        ch_merge_fastq_files = FASTQS.out.fastqc_clean.map{
+        row -> def sampleParts = row[0].id.tokenize('_')
+            tuple(sampleParts[0],sampleParts[1],row[0].single_end,row[1][0], row[1][1])
+        }.groupTuple()
+
+        ch_versions     = ch_versions.mix((FASTQS.out.versions))
+        }
+	if (start == "B"){
+        ch_merge_fastq_files = channel.fromPath(params.input).splitCsv().map{
+        row -> def sampleParts = row[0].tokenize('_')
+            tuple(sampleParts[0],sampleParts[1],row[1],row[2],row[3])
+        }.groupTuple()
+        ALIGN(
+        ch_merge_fastq_files
+        )
+        ch_bwamem2_mem_bam          = ALIGN.out.bwamem2_mem_bam
+
+        }else if('B' in processList){
+            ALIGN(
+                ch_merge_fastq_files
+            )           
+           ch_bwamem2_mem_bam          = ALIGN.out.bwamem2_mem_bam
+        }
+        if(start == "C"){
+        ch_bwamem2_men_bam = channel.fromPath(params.input)
+                             .splitCsv()
+                             .map{
+                                row -> def bam=[:]
+                                bam.id = row[0]
+                                tuple(bam,row[1])
+                             }
+        VARIANT(
+            ch_bwamem2_men_bam          ,
+        )
+        }else if('C' in processList){
+            VARIANT(
+                ch_bwamem2_mem_bam          
+            )
+        }
+        if (start == 'D'){
+            ch_gvcf_dbimport = channel.fromPath(params.input)
+                           .splitCsv()
+                           .collect()
+                           .toList()
+                           .view()
+        POPULATION(
+            ch_gvcf_dbimport                      ,
+        )
+        ch_vcf_tbi_structure_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+        ch_vcf_tbi_pca_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+
+        ANNOTATION(
+            POPULATION.out.ch_vcf_tbi_annotable
+        )
+        STRUCTURE(
+           ch_vcf_tbi_structure_vcfaddid
+        )
+        PCA(
+            ch_vcf_tbi_pca_vcfaddid,
+            STRUCTURE.out.ch_plink_indep_prunein
+            )
+        GWAS(
+            POPULATION.out.ch_vcf_tbi_pca_vcfaddid,
+            POPULATION.out.ch_groups_vcf_emmax_groupping,
+            ANNOTATION.out.ch_annoevf_emmax_anno
+	        )
+        }else if ('D' in processList){
+            POPULATION(
+            VARIANT.out.ch_gvcf_dbimport          ,
+        )
+        ch_vcf_tbi_structure_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+        ch_vcf_tbi_pca_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+        ANNOTATION(
+            POPULATION.out.ch_vcf_tbi_annotable
+        )
+        STRUCTURE(
+           ch_vcf_tbi_structure_vcfaddid
+        )
+	    PCA(
+            ch_vcf_tbi_pca_vcfaddid,
+ 	    STRUCTURE.out.ch_plink_indep_prunein
+        )
+        GWAS(
+          POPULATION.out.ch_vcf_tbi_pca_vcfaddid,
+          POPULATION.out.ch_groups_vcf_emmax_groupping,
+          ANNOTATION.out.ch_annoevf_emmax_anno
+	    )
+        }
+
+}
+
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    COMPLETION EMAIL AND SUMMARY
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+
+workflow.onComplete {
+    if (params.email || params.email_on_fail) {
+        NfcoreTemplate.email(workflow, params, summary_params, projectDir, log)
+    }
+    NfcoreTemplate.summary(workflow, params, log)
+    if (params.hook_url) {
+        NfcoreTemplate.IM_notification(workflow, params, summary_params, projectDir, log)
+    }
+}
+
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    THE END
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+//
+// Check input samplesheet and get read channels
+//
+
+include { SAMPLESHEET_CHECK } from '../../modules/local/samplesheet_check'
+
+workflow INPUT_CHECK {
+    take:
+    samplesheet // file: /path/to/samplesheet.csv
+
+    main:
+    SAMPLESHEET_CHECK ( samplesheet )
+        .csv
+        .splitCsv ( header:true, sep:',' )
+        .map { create_fastq_channel(it) }
+        .set { reads }
+    
+    emit:
+    reads                                     // channel: [ val(meta), [ reads ] ]
+    versions = SAMPLESHEET_CHECK.out.versions // channel: [ versions.yml ]
+}
+
+// Function to get list of [ meta, [ fastq_1, fastq_2 ] ]
+def create_fastq_channel(LinkedHashMap row) {
+    // create meta map
+    def meta = [:]
+    meta.id         = row.sample
+    meta.single_end = row.single_end.toBoolean()
+
+    // add path(s) of the fastq file(s) to the meta map
+    def fastq_meta = []
+    if (!file(row.fastq_1).exists()) {
+        exit 1, "ERROR: Please check input samplesheet -> Read 1 FastQ file does not exist!\n${row.fastq_1}"
+    }
+    if (meta.single_end) {
+        fastq_meta = [ meta, [ file(row.fastq_1) ] ]
+    } else {
+        if (!file(row.fastq_2).exists()) {
+            exit 1, "ERROR: Please check input samplesheet -> Read 2 FastQ file does not exist!\n${row.fastq_2}"
+        }
+        fastq_meta = [ meta, [ file(row.fastq_1), file(row.fastq_2) ] ]
+    }
+    return fastq_meta
+}
+ include{ GUNZIP_FASTA as GUNZIP         }from '../../modules/nf-core/gunzip'
+ include{ GUNZIP_GTF as GUNZIP           }from '../../modules/nf-core/gunzip'
+ include{ GUNZIP_GTF as GUNZIP           }from '../../modules/nf-core/gunzip'
+ include{ GUNZIP_ADAPTER_FASTA as GUNZIP }from '../../modules/nf-core/gunzip'
+ include{ GUNZIP }from '../../modules/nf-core/gunzip/main'
+
+
+workflow PREPARE_GENOME {
+    take:
+    fasta                     //file : genome file .fa
+    gtf                       //file : gtf file .gtf
+    gff                       //file : gff file .gtf
+    adapter_fasta             //file : adapter file .fa
+    group                     //file : sample grouping file .csv
+    groupforassociate         //file : group grouping file .csv
+    phenotypes                //file : phenotype file .csv
+
+    main:
+    
+    
+    // ungzip the fasta.gz file
+    if (fasta.endsWith(".gz")) {
+        // ungip fasta.gz file 
+        ch_fasta = GUNZIP_FASTA([[:],fasta]).gunzip.map{it[1]}
+        
+    }else {
+        ch_fasta = Channel.value(file(fasta))
+        
+    }
+    
+    // ungzip gtf.gz || gff.gz file 
+    if ( gtf || gff ) {
+        if (gtf) {
+            if ( gtf.endsWith(".gz")){
+                ch_gtf = GUNZIP_GTF([[:],gtf]).gunzip.map{it[1]}
+            }
+            else{
+                ch_gtf = Channel.value(file(gtf))
+            }
+        }
+        else if (gff) {
+            if ( gff.endsWith(".gz")){
+                ch_gff = GUNZIP_GTF([[:],gff]).gunzip.map{it[1]}
+            }
+            else{
+                ch_gff = Channel.value(file(gff))
+            }
+            ch_gtf = GFFREAD ( ch_gff ).gtf
+        }
+    }
+
+
+    // ungzip adapter_fasta.gz file
+    if (adapter_fasta){
+        if ( adapter_fasta.endsWith(".gz") ){
+        ch_adapter_fasta = GUNZIP_ADAPTER_FASTA([[:],adapter_fasta]).gunzip.map{it[1]}
+    }else{
+        ch_adapter_fasta = Channel.value(file(adapter_fasta))
+    }
+    }
+
+
+    
+}include { BWAMEM2_INDEX                 } from '../../../modules/nf-core/bwamem2/index/main'
+include { BWAMEM2_MEM                   } from '../../../modules/nf-core/bwamem2/mem/main'  
+include { MERGE_FASTQ                   } from '../../../modules/local/merge_fastq'
+
+
+
+workflow ALIGN {
+
+    take:
+    ch_fastqc_clean
+
+    main:
+    ch_merge_fastq_files = ch_fastqc_clean
+        //ch_merge_fastq_files.view()i
+    MERGE_FASTQ (
+        ch_merge_fastq_files
+    )
+    ch_map_fastq = MERGE_FASTQ.out.reads
+    //ch_map_fastq.view()
+    //def refname = file(fastaPath).baseName
+    def bwaidx_meta='fasta'
+    ch_fasta_genome_withmeta=tuple(bwaidx_meta, file(params.fasta))
+    ch_fasta_genome_withoutmeta=file(params.fasta)
+    
+    BWAMEM2_INDEX (
+        ch_fasta_genome_withmeta
+    )
+    //ch_map_fastq.view()
+    ch_tomap_fastq=ch_map_fastq.map{
+        row -> 
+            def sampleid = [:]
+            sampleid.id=row[0]
+            [sampleid,row[1]]
+    }
+    //ch_tomap_fastq.view()
+    BWAMEM2_MEM (
+        ch_tomap_fastq,
+        BWAMEM2_INDEX.out.index,
+        true
+    )
+
+    
+    emit:
+
+    bwamem2_mem_bam          = BWAMEM2_MEM.out.bam
+}
+
+include { ANNO_GFF3TOGENEPRED           } from '../../../modules/local/anno_gff3togenepred'
+include { ANNO_RETRIEVE_SEQ             } from '../../../modules/local/anno_retrieve_seq_from_fasta'
+include { ANNO_CONVERT2ANNOVAR          } from '../../../modules/local/anno_convert2annovar'
+include { ANNO_TABLE                    } from '../../../modules/local/anno_table_annovar'
+
+
+
+workflow ANNOTATION {
+    
+    take:
+    ch_vcf_tbi_annotable
+
+    main:
+    
+    ch_anno_gff_meta=['id':'ANNO']
+    ch_gff_gff3togenepred_withmeta=tuple(ch_anno_gff_meta, file(params.gff))
+    ch_gff_gff3togenepred_withoutmeta=file(params.gff)
+    ANNO_GFF3TOGENEPRED(
+        ch_gff_gff3togenepred_withmeta
+    )
+
+    ch_fasta_gff3togenepred_withmeta=tuple(ch_anno_gff_meta, file(params.fasta))
+    ch_fasta_genepred_gff3togenepred_withmeta=ANNO_GFF3TOGENEPRED.out.genep.map{
+        it-> tuple(it[0],it[1],ch_fasta_gff3togenepred_withmeta[1])}
+    ANNO_RETRIEVE_SEQ(
+        ch_fasta_genepred_gff3togenepred_withmeta
+    )
+    
+    ch_vcf_tbi_annotable=ch_vcf_tbi_annotable
+    ANNO_CONVERT2ANNOVAR(
+        ch_vcf_tbi_annotable
+    )
+
+   
+    ch_vcf_tbi_fa_fa2_gff_list_annotable=ch_vcf_tbi_annotable.map{
+        it-> tuple(it[0],it[1],it[2],ch_fasta_gff3togenepred_withmeta[1])}.join(
+                                    ANNO_RETRIEVE_SEQ.out.fa).map{
+        it-> tuple(it[0],it[1],it[2],it[3],it[4],ch_gff_gff3togenepred_withmeta[1])}.join(
+                                     ANNO_GFF3TOGENEPRED.out.genep).join(
+                                        ANNO_CONVERT2ANNOVAR.out.anno
+                                     )
+    ANNO_TABLE(
+        ch_vcf_tbi_fa_fa2_gff_list_annotable
+    )
+   
+   emit:
+   ch_annoevf_emmax_anno=ANNO_TABLE.out.annoevf.map{it->it[1]}
+
+}
+
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    PRINT PARAMS SUMMARY
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+
+include { paramsSummaryLog; paramsSummaryMap } from 'plugin/nf-validation'
+
+def logo = NfcoreTemplate.logo(workflow, params.monochrome_logs)
+def citation = '\n' + WorkflowMain.citation(workflow) + '\n'
+def summary_params = paramsSummaryMap(workflow)
+
+// Print parameter summary log to screen
+log.info logo + paramsSummaryLog(workflow) + citation
+
+WorkflowTest.initialise(params, log)
+
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    CONFIG FILES
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+
+ch_multiqc_config          = Channel.fromPath("$projectDir/assets/multiqc_config.yml", checkIfExists: true)
+ch_multiqc_custom_config   = params.multiqc_config ? Channel.fromPath( params.multiqc_config, checkIfExists: true ) : Channel.empty()
+ch_multiqc_logo            = params.multiqc_logo   ? Channel.fromPath( params.multiqc_logo, checkIfExists: true ) : Channel.empty()
+ch_multiqc_custom_methods_description = params.multiqc_methods_description ? file(params.multiqc_methods_description, checkIfExists: true) : file("$projectDir/assets/methods_description_template.yml", checkIfExists: true)
+
+
+
+
+include { FASTQC                        } from '../../../modules/nf-core/fastqc/main'
+include { MULTIQC                       } from '../../../modules/nf-core/multiqc/main'
+include { FASTQC as FASTQC_CLEAN        } from '../../../modules/nf-core/fastqc/main'
+include { MULTIQC as MULTIQC_CLEAN      } from '../../../modules/nf-core/multiqc/main'
+include { FASTP                         } from '../../../modules/nf-core/fastp/main'  
+include { CUSTOM_DUMPSOFTWAREVERSIONS   } from '../../../modules/nf-core/custom/dumpsoftwareversions/main'
+
+
+
+
+
+
+
+workflow FASTQS{
+    take:
+    reads
+    adapter_fasta
+    save_trimmed_fail
+    save_merged
+
+    main:
+    
+    ch_versions = Channel.empty()
+
+     //
+    // MODULE: Run FastQC
+    //
+    FASTQC (
+        reads
+    )
+    ch_versions = ch_versions.mix(FASTQC.out.versions.first())
+
+    CUSTOM_DUMPSOFTWAREVERSIONS (
+        ch_versions.unique().collectFile(name: 'collated_versions.yml')
+    )
+
+    //
+    // MODULE: MultiQC
+    //
+    //WorkflowTest.groovy
+    workflow_summary    = WorkflowTest.paramsSummaryMultiqc(workflow, summary_params)
+    ch_workflow_summary = Channel.value(workflow_summary)
+
+    methods_description    = WorkflowTest.methodsDescriptionText(workflow, ch_multiqc_custom_methods_description, params)
+    ch_methods_description = Channel.value(methods_description)
+
+    ch_multiqc_files = Channel.empty()
+    ch_multiqc_files = ch_multiqc_files.mix(ch_workflow_summary.collectFile(name: 'workflow_summary_mqc.yaml'))
+    ch_multiqc_files = ch_multiqc_files.mix(ch_methods_description.collectFile(name: 'methods_description_mqc.yaml'))
+    ch_multiqc_files = ch_multiqc_files.mix(CUSTOM_DUMPSOFTWAREVERSIONS.out.mqc_yml.collect())
+    ch_multiqc_files = ch_multiqc_files.mix(FASTQC.out.zip.collect{it[1]}.ifEmpty([]))
+
+    MULTIQC (
+        ch_multiqc_files.collect(),
+        ch_multiqc_config.toList(),
+        ch_multiqc_custom_config.toList(),
+        ch_multiqc_logo.toList()
+    )
+    FASTP (
+        reads,
+        adapter_fasta,
+        save_trimmed_fail,
+        save_merged
+    )
+    //    ch_versions = ch_versions.mix(FASTP.out.versions.first())
+    ch_fastqc_clean = Channel.empty()
+    ch_fastqc_clean = FASTP.out.reads
+
+    FASTQC_CLEAN (
+        ch_fastqc_clean
+    )
+    
+    ch_multiqc_files = Channel.empty()
+    ch_multiqc_files = ch_multiqc_files.mix(ch_workflow_summary.collectFile(name: 'workflow_summary_mqc.yaml'))
+    ch_multiqc_files = ch_multiqc_files.mix(ch_methods_description.collectFile(name: 'methods_description_mqc.yaml'))
+    ch_multiqc_files = ch_multiqc_files.mix(CUSTOM_DUMPSOFTWAREVERSIONS.out.mqc_yml.collect())
+    ch_multiqc_files = ch_multiqc_files.mix(FASTQC_CLEAN.out.zip.collect{it[1]}.ifEmpty([]))
+
+    MULTIQC_CLEAN (
+        ch_multiqc_files.collect(),
+        ch_multiqc_config.toList(),
+        ch_multiqc_custom_config.toList(),
+        ch_multiqc_logo.toList()
+    )
+
+    emit:
+    fastqc_clean   =  ch_fastqc_clean
+    versions       =  ch_versions
+}
+include { EMMAX_VCF_GROUPPING                                      } from '../../../modules/local/gwas_vcfgroup'
+include { STURCTURE_VCF_ADDID as EMMAX_VCF_ADDID                   } from '../../../modules/local/structure_vcfaddid'
+include { PLINK_INDEP as EMMAX_PLINK_INDEP                         } from '../../../modules/nf-core/plink/indep/main'
+include { PLINK_EXTRACT as EMMAX_PLINK_EXTRACT                     } from '../../../modules/nf-core/plink/extract/main'
+include { ADMIXTURE as EMMAX_ADMIXTURE                             } from '../../../modules/nf-core/admixture/main'
+include { GWAS_EMMAX_PLINK_FMAT                                    } from '../../../modules/local/gwas_emmax_plink_fmat'
+include { GWAS_EMMAX_COV                                           } from '../../../modules/local/gwas_emmax_cov'
+include { GWAS_EMMAX_KINSHIP                                       } from '../../../modules/local/gwas_emmax_kin'
+include { GWAS_EMMAX_ASSOCIATE                                     } from '../../../modules/local/gwas_emmax_assoc'
+include { GWAS_EMMAX_CMPLOT                                        } from '../../../modules/local/gwas_emmax_cmplot'
+include { GWAS_EMMAX_ANNOTATION                                    } from '../../../modules/local/gwas_emmax_annotation'
+include { STRUCTURE_PLOT                                           } from '../../../modules/local/structure_plot'
+
+
+
+
+workflow GWAS {
+    take:
+    ch_vcf_tbi_annotable
+    ch_vcf_tbi_structure_vcfaddid
+    ch_annoevf_emmax_anno
+    main:
+    
+    if(params.group && params.groupforassociate){
+        //println("exist")
+        ch_groupa=Channel.fromPath(params.groupforassociate).splitCsv(header:true).map{it -> tuple([group:it['group']],[groupassoc:it['groupassoc']])}.view()
+        ch_group=Channel.fromPath(params.group).splitCsv(header:true).map{it -> tuple([group:it['group']],[sample:it['sample']])}.view()
+        ch_group_info=ch_groupa.combine(ch_group,by:0)
+        //ch_group_info.view()
+        ch_group_split=ch_group_info.map{it-> if(it[1].groupassoc=="1"){tuple(['id':it[0].group],it[2].sample)}}.groupTuple()
+        //ch_group_split.view()
+        ch_all_split=ch_group_info.map{it -> tuple(['id':'popu_snp'],it[2].sample)}.groupTuple()
+        //ch_all_split.view()
+        ch_groups=ch_all_split.concat(ch_group_split)
+        //ch_groups.view()
+        ch_vcf_tbi_pca_vcfaddid=ch_vcf_tbi_annotable
+        //ch_vcf_tbi_pca_vcfaddid.view()
+        ch_groups_vcf_emmax_groupping=ch_groups.combine(ch_vcf_tbi_pca_vcfaddid)
+        //ch_groups_vcf_emmax_groupping.view()
+    }else{
+        //println("not exist")
+        ch_groups_vcf_emmax_groupping=ch_vcf_tbi_structure_vcfaddid
+    }
+    //ch_groups_vcf_emmax_groupping.view()
+    EMMAX_VCF_GROUPPING(
+        ch_groups_vcf_emmax_groupping
+    )
+    //EMMAX_VCF_GROUPPING.out.vcf.view()
+    EMMAX_VCF_ADDID(
+        EMMAX_VCF_GROUPPING.out.vcf
+    )
+ 
+    EMMAX_PLINK_INDEP(
+        EMMAX_VCF_ADDID.out.vcf
+    )
+
+    ch_vcf_tbi_prunein_emmax_plink_extract=EMMAX_VCF_ADDID.out.vcf.join(EMMAX_PLINK_INDEP.out.prunein)
+    EMMAX_PLINK_EXTRACT(
+        ch_vcf_tbi_prunein_emmax_plink_extract
+    )
+
+    ch_bed_bim_fam_EMMAX_k_admixture=EMMAX_PLINK_EXTRACT.out.bed.join(EMMAX_PLINK_EXTRACT.out.bim).join(EMMAX_PLINK_EXTRACT.out.fam).combine(Channel.from(2,3,4,5,6,7,8,9,10)).map{
+        it -> tuple(['id':"popu_snp_${it[4]}","group":"${it[0].id}"],it[1],it[2],it[3],it[4])
+    }
+    //ch_bed_bim_fam_EMMAX_k_admixture.view()
+    EMMAX_ADMIXTURE(
+        ch_bed_bim_fam_EMMAX_k_admixture
+    )
+
+    ch_vcf_tbi_chrnum_ctgnum_emmax_fmat=EMMAX_VCF_ADDID.out.vcf.join(EMMAX_VCF_ADDID.out.ctgnum)
+    //ch_vcf_tbi_chrnum_ctgnum_emmax_fmat.view()
+    GWAS_EMMAX_PLINK_FMAT(
+        ch_vcf_tbi_chrnum_ctgnum_emmax_fmat
+    )
+
+    ch_qfile_tpedfam_emmax_cov=EMMAX_ADMIXTURE.out.ancestry_fractions.join(EMMAX_ADMIXTURE.out.cvlog).map{
+              it-> tuple(['id':"${it[0].group}"],it[1],it[2])}.groupTuple().join(
+                GWAS_EMMAX_PLINK_FMAT.out.emmaxfile.map{it-> tuple(['id':"${it[0].id}"],it[2])})
+    GWAS_EMMAX_COV(
+        ch_qfile_tpedfam_emmax_cov
+    )
+
+    STRUCTURE_PLOT(
+        GWAS_EMMAX_COV.out.cverr
+    )
+
+    ch_tped_tfam_emmax_kin=GWAS_EMMAX_PLINK_FMAT.out.emmaxfile.map{it-> tuple(['id':"${it[0].id}"],it[1],it[2],it[3],it[4])}
+    GWAS_EMMAX_KINSHIP(
+        ch_tped_tfam_emmax_kin
+    )
+
+    ch_emmax_assoc=GWAS_EMMAX_PLINK_FMAT.out.emmaxfile.map{it-> tuple(['id':"${it[0].id}"],it[1],it[2],it[3],it[4])}.
+        join(GWAS_EMMAX_KINSHIP.out.kin).
+        join(GWAS_EMMAX_COV.out.cov).combine(Channel.fromPath(params.phenotypes)).
+        combine(Channel.fromPath(params.phenotypes).
+        splitCsv().first().flatMap().filter{it != 'sample'}.
+        merge(Channel.from(1..10000)).combine(Channel.from('K','KQ')))
+   ch_emmax_assoc.view()
+
+    GWAS_EMMAX_ASSOCIATE(
+        ch_emmax_assoc
+    )
+    
+    GWAS_EMMAX_CMPLOT(
+        GWAS_EMMAX_ASSOCIATE.out.assoc
+    )
+
+    ch_annoevf_emmax_anno=ch_annoevf_emmax_anno
+    ch_signif_annoevf_emmax_anno=GWAS_EMMAX_CMPLOT.out.signif.combine(ch_annoevf_emmax_anno)
+    //ch_signif_annoevf_emmax_anno.view()
+    GWAS_EMMAX_ANNOTATION(
+        ch_signif_annoevf_emmax_anno
+    )
+}
+include { PCA_VCF_ADDID                 } from '../../../modules/local/pca_vcfaddid'
+include { VCFTOOLS_PLINK                } from '../../../modules/local/vcftools_plink'
+include { PLINK_MAKEBED                 } from '../../../modules/local/plink_makebed'
+include { GCTA_MAKEGRM                  } from '../../../modules/local/gcta_makegrm'
+include { GCTA_PCA                      } from '../../../modules/local/gcta_pca'
+include { GCTA_PCA_PLOT                 } from '../../../modules/local/gcta_pca_plot'
+
+
+workflow PCA {
+    take:
+    ch_vcf_tbi_pca_vcfaddid
+    ch_plink_indep_prunein
+    
+    main:
+    PCA_VCF_ADDID(
+        ch_vcf_tbi_pca_vcfaddid
+    )
+
+    ch_vcftools_plink=PCA_VCF_ADDID.out.vcf.join(ch_plink_indep_prunein)
+    VCFTOOLS_PLINK(
+        ch_vcftools_plink
+    )
+
+    PLINK_MAKEBED(
+        VCFTOOLS_PLINK.out.plink
+    )
+
+    ch_bed_bim_fam_gcta_makegrm=VCFTOOLS_PLINK.out.plink.join(PLINK_MAKEBED.out.bed)
+    GCTA_MAKEGRM(
+        ch_bed_bim_fam_gcta_makegrm
+    )
+
+    GCTA_PCA(
+        GCTA_MAKEGRM.out.grm
+    )
+    ch_eigenvec = GCTA_PCA.out.vec.map{
+        row -> tuple(row[0],row[2])
+    }.view()
+    GCTA_PCA_PLOT(
+        ch_eigenvec
+    )
+
+}
+include { GET_CHROMSOME_LST                                               } from '../../../modules/local/get_chromsomelst'
+include { GATK4_GENOMICSDBIMPORT                                          } from '../../../modules/nf-core/gatk4/genomicsdbimport/main'
+include { GATK4_GENOTYPEGVCFS                                             } from '../../../modules/nf-core/gatk4/genotypegvcfs/main'
+include { GATK4_GATHERVCFS                                                } from '../../../modules/local/gatk4_gathervcfs'
+include { GATK4_SELECTVARIANTS as GATK4_SELECTVARIANTS_SNP_HQ             } from '../../../modules/nf-core/gatk4/selectvariants/main'
+include { GATK4_SELECTVARIANTS as GATK4_SELECTVARIANTS_INDEL_HQ           } from '../../../modules/nf-core/gatk4/selectvariants/main'
+include { GATK4_VARIANTFILTRATION as GATK4_VARIANTFILTRATION_SNP_FOR_VQ   } from '../../../modules/nf-core/gatk4/variantfiltration/main'
+include { GATK4_VARIANTFILTRATION as GATK4_VARIANTFILTRATION_INDEL_FOR_VQ } from '../../../modules/nf-core/gatk4/variantfiltration/main'
+include { FILTER_PASS_VARIANT as FILTER_PASS_VARIANT_FOR_VQ               } from '../../../modules/local/filter_pass_variant'
+include { GATK4_INDEXFEATUREFILE as GATK4_INDEXFEATUREFILE_FOR_VQ         } from '../../../modules/nf-core/gatk4/indexfeaturefile/main'
+include { GATK4_VARIANTRECALIBRATOR as GATK4_VARIANTRECALIBRATOR_SNP      } from '../../../modules/nf-core/gatk4/variantrecalibrator/main'
+include { GATK4_APPLYVQSR as GATK4_APPLYVQSR_SNP                          } from '../../../modules/nf-core/gatk4/applyvqsr/main'
+include { GATK4_VARIANTRECALIBRATOR as GATK4_VARIANTRECALIBRATOR_INDEL    } from '../../../modules/nf-core/gatk4/variantrecalibrator/main'
+include { GATK4_APPLYVQSR as GATK4_APPLYVQSR_INDEL                        } from '../../../modules/nf-core/gatk4/applyvqsr/main'
+include { GATK4_SELECTVARIANTS as GATK4_SELECTVARIANTS_SNP_VQ             } from '../../../modules/nf-core/gatk4/selectvariants/main'
+include { GATK4_SELECTVARIANTS as GATK4_SELECTVARIANTS_INDEL_VQ           } from '../../../modules/nf-core/gatk4/selectvariants/main'
+include { FILTER_PASS_VARIANT as FILTER_PASS_VARIANT_VQ                   } from '../../../modules/local/filter_pass_variant'
+include { GATK4_INDEXFEATUREFILE as GATK4_INDEXFEATUREFILE_VQ             } from '../../../modules/nf-core/gatk4/indexfeaturefile/main'
+include { GATK4_CREATESEQUENCEDICTIONARY                           } from '../../../modules/nf-core/gatk4/createsequencedictionary/main'
+include { SAMTOOLS_FAIDX                                           } from '../../../modules/nf-core/samtools/faidx/main'
+include { GATK4_INDEXFEATUREFILE_GCVF                                     } from '../../../modules/nf-core/gatk4/indexgcvffile/main'
+
+
+
+
+
+
+workflow POPULATION{
+    take:
+    ch_gvcf_dbimport
+    //ch_tbi_dbimport
+    main:
+    def bwaidx_meta='fasta'
+    ch_fasta_genome_withmeta=tuple(bwaidx_meta, file(params.fasta))
+    ch_fasta_genome_withoutmeta=file(params.fasta)
+
+    SAMTOOLS_FAIDX(
+            ch_fasta_genome_withmeta
+        )
+    ch_fai_genome_withoutmeta= SAMTOOLS_FAIDX.out.fai.collect().flatten().toList().map{it -> it[1]} 
+    ch_samtools_faidx_fai    = SAMTOOLS_FAIDX.out.fai
+
+    GATK4_CREATESEQUENCEDICTIONARY(
+            ch_fasta_genome_withmeta
+        )
+    ch_dict_genome_withoutmeta=GATK4_CREATESEQUENCEDICTIONARY.out.dict.collect().flatten().toList().map{it -> it[1]}
+    ch_gatk4_createsequencedictionary_dict = GATK4_CREATESEQUENCEDICTIONARY.out.dict
+
+    GET_CHROMSOME_LST(
+        ch_fasta_genome_withoutmeta
+    )
+    ch_gvcf_indexfeaturefile = ch_gvcf_dbimport
+                           .flatten()
+    GATK4_INDEXFEATUREFILE_GCVF(
+        ch_gvcf_indexfeaturefile
+    )
+    //ch_gvcf_dbimport.view() 
+    ch_tbi_dbimport = GATK4_INDEXFEATUREFILE_GCVF.out.tbi.collect().toList()
+    // ch_tbi_dbimport.view()   
+    
+    //ch_gvcf_dbimport=GATK4_HAPLOTYPECALLER_GVCF.out.vcf.map{it -> it[1]}.collect{it -> "--variant ${it}"}.map{it-> it.join(' ')}
+    //ch_gvcf_dbimport=GATK4_HAPLOTYPECALLER_GVCF.out.vcf.map{it -> it[1]}.collect().toList()
+    //ch_tbi_dbimport=GATK4_HAPLOTYPECALLER_GVCF.out.tbi.map{it -> it[1]}.collect().toList()
+    ch_gvcf_tbi_interval_wspace_dbimport=Channel.from(["id":"population"]).combine(
+        ch_gvcf_dbimport).combine(ch_tbi_dbimport).combine(GET_CHROMSOME_LST.out.lst.map{it->it[0]}).combine(
+        Channel.from(false)).combine(Channel.from(file("NOFILE")))
+    // ch_gvcf_tbi_interval_wspace_dbimport.view()
+    GATK4_GENOMICSDBIMPORT(
+        ch_gvcf_tbi_interval_wspace_dbimport,
+        false,
+        false,
+        false
+    )
+    
+    ch_chrom_genotypegvcfs=GET_CHROMSOME_LST.out.lst.map{it->it[1]}.splitText(by:1).map{it->it.split("\n")[0]}
+    ch_ctg_genotypegvcfs=GET_CHROMSOME_LST.out.lst.map{it->it[2]}
+    ch_chrom_ctg_genotypegvcfs=ch_chrom_genotypegvcfs.map{file("NOFILE")}
+    ch_chrom_ctg_genotypegvcfs=ch_chrom_ctg_genotypegvcfs.concat(ch_ctg_genotypegvcfs)
+    ch_ctgline_genotypegvcfs=Channel.from(false)
+    ch_chrom_genotypegvcfs=ch_chrom_genotypegvcfs.concat(ch_ctgline_genotypegvcfs)
+    ch_meta_id_genotypegvcfs=ch_chrom_genotypegvcfs.map{it->
+        it==false ? tuple(["id":"ctg"],it) : tuple(["id":it],it)
+    }
+    ch_interval_genotypegvcfs=ch_meta_id_genotypegvcfs.merge(ch_chrom_ctg_genotypegvcfs)
+    ch_gvcfdb_genotypegvcfs=GATK4_GENOMICSDBIMPORT.out.genomicsdb.map{itdb->itdb[1]}
+    ch_gvcf_fai_interval_genotypegvcfs=ch_interval_genotypegvcfs.combine(ch_gvcf_dbimport).combine(ch_tbi_dbimport).combine(ch_gvcfdb_genotypegvcfs).map{
+        it-> tuple(it[0],it[5],it[4],it[1],it[2])
+    }
+    //GATK4_GENOMICSDBIMPORT.out.genomicsdb.map{itdb->itdb[1]}.view()
+    
+    GATK4_GENOTYPEGVCFS(
+        ch_gvcf_fai_interval_genotypegvcfs,
+        ch_fasta_genome_withoutmeta,
+        ch_fai_genome_withoutmeta,
+        ch_dict_genome_withoutmeta
+        //file("NOFILE"),
+        //file("NOFILE")
+    )
+    
+    ch_vcf_gathervcfs=ch_interval_genotypegvcfs.merge(
+        Channel.from(1..100000)).join(
+            GATK4_GENOTYPEGVCFS.out.vcf).toSortedList{
+                 a, b -> a[3] <=> b[3] 
+            }.flatten().buffer(size:5).map{it->it[4]}.flatten().collect().map{it-> tuple(['id':'population'],it)}
+    ch_tbi_gathervcfs=ch_interval_genotypegvcfs.merge(
+        Channel.from(1..100000)).join(
+            GATK4_GENOTYPEGVCFS.out.tbi).toSortedList{
+                 a, b -> a[3] <=> b[3] 
+            }.flatten().buffer(size:5).map{it->it[4]}.flatten().collect().map{it-> tuple(['id':'population'],it)}
+    ch_vcf_tbi_gathervcfs=ch_vcf_gathervcfs.join(ch_tbi_gathervcfs)
+    
+    ch_vcf_gathervcfs.view()
+    GATK4_GATHERVCFS(
+        ch_vcf_tbi_gathervcfs
+    )
+        
+    ch_vcf_tbi_selectvariants_snp_hq=GATK4_GATHERVCFS.out.vcf.join(GATK4_GATHERVCFS.out.tbi)
+    ch_vcf_tbi_intervals_selectvariants_snp_hq=ch_vcf_tbi_selectvariants_snp_hq.map{
+            it -> tuple(it[0],it[1],it[2],file("NOFILE"))
+    }
+
+    GATK4_SELECTVARIANTS_SNP_HQ(
+        ch_vcf_tbi_intervals_selectvariants_snp_hq
+    )
+    GATK4_SELECTVARIANTS_INDEL_HQ(
+        ch_vcf_tbi_intervals_selectvariants_snp_hq
+    )
+       
+    ch_vcf_tbi_variantfil_snp_forvq=GATK4_SELECTVARIANTS_SNP_HQ.out.vcf.join(GATK4_SELECTVARIANTS_SNP_HQ.out.tbi)
+    GATK4_VARIANTFILTRATION_SNP_FOR_VQ(
+        ch_vcf_tbi_variantfil_snp_forvq,
+        ch_fasta_genome_withmeta,
+        ch_samtools_faidx_fai,
+        ch_gatk4_createsequencedictionary_dict
+    )
+    ch_vcf_tbi_variantfil_indel_forvq=GATK4_SELECTVARIANTS_INDEL_HQ.out.vcf.join(GATK4_SELECTVARIANTS_INDEL_HQ.out.tbi)
+    GATK4_VARIANTFILTRATION_INDEL_FOR_VQ(
+        ch_vcf_tbi_variantfil_indel_forvq,
+        ch_fasta_genome_withmeta,
+        ch_samtools_faidx_fai,
+	ch_gatk4_createsequencedictionary_dict   
+ )
+
+    ch_vcf_tbi_type_filpass_for_vq=GATK4_VARIANTFILTRATION_SNP_FOR_VQ.out.vcf.join(GATK4_VARIANTFILTRATION_SNP_FOR_VQ.out.tbi).map{
+        it-> tuple(['id':'snp'],it[1],it[2])
+    }.concat(GATK4_VARIANTFILTRATION_INDEL_FOR_VQ.out.vcf.join(GATK4_VARIANTFILTRATION_INDEL_FOR_VQ.out.tbi).map{
+        it-> tuple(['id':'indel'],it[1],it[2])
+    })
+    FILTER_PASS_VARIANT_FOR_VQ(
+
+        ch_vcf_tbi_type_filpass_for_vq
+    )
+    FILTER_PASS_VARIANT_FOR_VQ.out.vcf.view()
+    GATK4_INDEXFEATUREFILE_FOR_VQ(
+        FILTER_PASS_VARIANT_FOR_VQ.out.vcf
+    )
+    
+
+
+    ch_resource_vcf_vqsr_indel=FILTER_PASS_VARIANT_FOR_VQ.out.vcf.map{it->if(it[0].id=="indel"){it[1]}}.combine(GATK4_VARIANTFILTRATION_INDEL_FOR_VQ.out.vcf.map{it->it[1]})
+    ch_resource_tbi_vqsr_indel=GATK4_INDEXFEATUREFILE_FOR_VQ.out.index.map{it->if(it[0].id=="indel"){it[1]}}.combine(GATK4_VARIANTFILTRATION_INDEL_FOR_VQ.out.tbi.map{it->it[1]})
+    ch_vcf_tbi_vqsr_indel=GATK4_GATHERVCFS.out.vcf.join(GATK4_GATHERVCFS.out.tbi).map{it->tuple(['id':'indel'],it[1],it[2])}
+   // ch_resource_tbi_vqsr_indel.view()
+    GATK4_VARIANTRECALIBRATOR_INDEL(
+        ch_vcf_tbi_vqsr_indel,
+        ch_resource_vcf_vqsr_indel,
+        ch_resource_tbi_vqsr_indel,
+        ch_fasta_genome_withoutmeta,
+        ch_fai_genome_withoutmeta,
+        ch_dict_genome_withoutmeta
+    )
+    
+    ch_applyvqsr_indel=ch_vcf_tbi_vqsr_indel.join(
+        GATK4_VARIANTRECALIBRATOR_INDEL.out.recal).join(
+        GATK4_VARIANTRECALIBRATOR_INDEL.out.idx).join(
+        GATK4_VARIANTRECALIBRATOR_INDEL.out.tranches)
+    GATK4_APPLYVQSR_INDEL(
+        ch_applyvqsr_indel,
+        ch_fasta_genome_withoutmeta,
+        ch_fai_genome_withoutmeta,
+        ch_dict_genome_withoutmeta
+    )
+
+    ch_resource_vcf_vqsr_snp=FILTER_PASS_VARIANT_FOR_VQ.out.vcf.map{it->if(it[0].id=="snp"){it[1]}}.combine(GATK4_VARIANTFILTRATION_SNP_FOR_VQ.out.vcf.map{it->it[1]})
+    ch_resource_tbi_vqsr_snp=GATK4_INDEXFEATUREFILE_FOR_VQ.out.index.map{it->if(it[0].id=="snp"){it[1]}}.combine(GATK4_VARIANTFILTRATION_SNP_FOR_VQ.out.tbi.map{it->it[1]})    
+    ch_vcf_tbi_vqsr_indel_snp=GATK4_APPLYVQSR_INDEL.out.vcf.join(GATK4_APPLYVQSR_INDEL.out.tbi).map{it->tuple(['id':'indel_snp'],it[1],it[2])}
+    GATK4_VARIANTRECALIBRATOR_SNP(
+        ch_vcf_tbi_vqsr_indel_snp,
+        ch_resource_vcf_vqsr_snp,
+        ch_resource_tbi_vqsr_snp,
+        ch_fasta_genome_withoutmeta,
+        ch_fai_genome_withoutmeta,
+        ch_dict_genome_withoutmeta
+
+    )
+
+    ch_applyvqsr_indel_snp=ch_vcf_tbi_vqsr_indel_snp.join(
+        GATK4_VARIANTRECALIBRATOR_SNP.out.recal).join(
+        GATK4_VARIANTRECALIBRATOR_SNP.out.idx).join(
+        GATK4_VARIANTRECALIBRATOR_SNP.out.tranches)    
+    GATK4_APPLYVQSR_SNP(
+        ch_applyvqsr_indel_snp,
+        ch_fasta_genome_withoutmeta,
+        ch_fai_genome_withoutmeta,
+        ch_dict_genome_withoutmeta
+    )
+
+    ch_vcf_tbi_intervals_selectvariants_snp_vq=GATK4_APPLYVQSR_SNP.out.vcf.join(GATK4_APPLYVQSR_SNP.out.tbi).map{
+        it-> tuple(['id':'snp'],it[1],it[2],file("NOFILE"))
+    }
+    ch_vcf_tbi_intervals_selectvariants_indel_vq=GATK4_APPLYVQSR_SNP.out.vcf.join(GATK4_APPLYVQSR_SNP.out.tbi).map{
+        it-> tuple(['id':'indel'],it[1],it[2],file("NOFILE"))
+    }
+    GATK4_SELECTVARIANTS_SNP_VQ(
+        ch_vcf_tbi_intervals_selectvariants_snp_vq
+    )
+    GATK4_SELECTVARIANTS_INDEL_VQ(
+        ch_vcf_tbi_intervals_selectvariants_indel_vq
+    )
+
+    ch_vcf_tbi_fil_pass_variant_vq=GATK4_SELECTVARIANTS_SNP_VQ.out.vcf.join(GATK4_SELECTVARIANTS_SNP_VQ.out.tbi).concat(
+        GATK4_SELECTVARIANTS_INDEL_VQ.out.vcf.join(GATK4_SELECTVARIANTS_INDEL_VQ.out.tbi)).concat(
+        GATK4_APPLYVQSR_SNP.out.vcf.join(GATK4_APPLYVQSR_SNP.out.tbi))
+    FILTER_PASS_VARIANT_VQ(
+        ch_vcf_tbi_fil_pass_variant_vq
+    )
+    
+    GATK4_INDEXFEATUREFILE_VQ(
+        FILTER_PASS_VARIANT_VQ.out.vcf
+    )
+
+
+    emit:
+    ch_vcf_tbi_annotable = FILTER_PASS_VARIANT_VQ.out.vcf.map{it-> if(it[0].id=='snp'){it}}.join(
+        GATK4_INDEXFEATUREFILE_VQ.out.index.map{it-> if(it[0].id=='snp'){it}}).map{it-> tuple(['id':'ANNO'],it[1],it[2])}
+    ch_vcf_tbi_structure_vcfaddid=FILTER_PASS_VARIANT_VQ.out.vcf.map{it-> if(it[0].id=='snp'){it}}.join( GATK4_INDEXFEATUREFILE_VQ.out.index.map{it-> if(it[0].id=='snp'){it}}).map{it-> tuple(['id':'popu_snp'],it[1],it[2])}  
+    ch_vcf_tbi_pca_vcfaddid=FILTER_PASS_VARIANT_VQ.out.vcf.map{it-> if(it[0].id=='snp'){it}}.join(    GATK4_INDEXFEATUREFILE_VQ.out.index.map{it-> if(it[0].id=='snp'){it}}).map{it-> tuple(it[1],it[2])}
+    ch_groups_vcf_emmax_groupping=FILTER_PASS_VARIANT_VQ.out.vcf.map{it-> if(it[0].id=='snp'){it}}.join(GATK4_INDEXFEATUREFILE_VQ.out.index.map{it-> if(it[0].id=='snp'){it}}).map{it-> tuple(['id':'popu_snp'],0,it[1],it[2])}
+
+}
+include { STURCTURE_VCF_ADDID           } from '../../../modules/local/structure_vcfaddid'
+include { PLINK_INDEP                   } from '../../../modules/nf-core/plink/indep/main'
+include { PLINK_EXTRACT                 } from '../../../modules/nf-core/plink/extract/main'
+include { ADMIXTURE                     } from '../../../modules/nf-core/admixture/main'
+
+
+workflow STRUCTURE {
+    take:
+    ch_vcf_tbi_structure_vcfaddid
+
+    main:
+    
+    ch_vcf_tbi_structure_vcfaddid=ch_vcf_tbi_structure_vcfaddid
+    
+    //ch_vcf_tbi_structure_vcfaddid.view()
+    STURCTURE_VCF_ADDID(
+        ch_vcf_tbi_structure_vcfaddid
+    )
+
+    ch_vcf_tbi_plink_indep=STURCTURE_VCF_ADDID.out.vcf
+    PLINK_INDEP(
+        ch_vcf_tbi_plink_indep
+    )
+    
+    ch_vcf_tbi_prunein_plink_extract=ch_vcf_tbi_plink_indep.join(PLINK_INDEP.out.prunein)
+    PLINK_EXTRACT(
+        ch_vcf_tbi_prunein_plink_extract
+    )
+
+    ch_bed_bim_fam_k_admixture=PLINK_EXTRACT.out.bed.join(PLINK_EXTRACT.out.bim).join(PLINK_EXTRACT.out.fam).combine(Channel.from(2,3,4,5,6,7,8,9,10)).map{
+        it -> tuple(['id':"popu_snp_${it[4]}"],it[1],it[2],it[3],it[4])
+    }
+    //ch_bed_bim_fam_k_admixture.view()
+    ADMIXTURE(
+        ch_bed_bim_fam_k_admixture
+    )
+            //    R_STRUCTURE_PLOT()
+   emit:
+   ch_plink_indep_prunein = PLINK_INDEP.out.prunein
+}
+include { GATK4_CREATESEQUENCEDICTIONARY                           } from '../../../modules/nf-core/gatk4/createsequencedictionary/main'
+include { GATK4_HAPLOTYPECALLER as GATK4_HAPLOTYPECALLER_PREPARE   } from '../../../modules/nf-core/gatk4/haplotypecaller/main'
+include { GATK4_SELECTVARIANTS as GATK4_SELECTVARIANTS_SNP         } from '../../../modules/nf-core/gatk4/selectvariants/main'
+include { GATK4_SELECTVARIANTS as GATK4_SELECTVARIANTS_INDEL       } from '../../../modules/nf-core/gatk4/selectvariants/main'
+include { GATK4_VARIANTFILTRATION as GATK4_VARIANTFILTRATION_SNP   } from '../../../modules/nf-core/gatk4/variantfiltration/main'
+include { GATK4_VARIANTFILTRATION as GATK4_VARIANTFILTRATION_INDEL } from '../../../modules/nf-core/gatk4/variantfiltration/main'
+include { GATK4_SELECTVARIANTS as GATK4_SELECTVARIANTS_SNP_BQ      } from '../../../modules/nf-core/gatk4/selectvariants/main'
+include { GATK4_SELECTVARIANTS as GATK4_SELECTVARIANTS_INDEL_BQ    } from '../../../modules/nf-core/gatk4/selectvariants/main'
+include { GATK4_BASERECALIBRATOR                                   } from '../../../modules/nf-core/gatk4/baserecalibrator/main'
+include { GATK4_APPLYBQSR                                          } from '../../../modules/nf-core/gatk4/applybqsr/main'
+include { GATK4_BASERECALIBRATOR as GATK4_BASERECALIBRATOR_FORSTAT } from '../../../modules/nf-core/gatk4/baserecalibrator/main'
+include { SAMTOOLS_INDEX as SAMTOOLS_INDEX_BQSR                    } from '../../../modules/nf-core/samtools/index/main'
+include { GATK4_ANALYZECOVARIATES                                  } from '../../../modules/local/gatk4_analyzecovariates'
+include { GATK4_HAPLOTYPECALLER as GATK4_HAPLOTYPECALLER_GVCF      } from '../../../modules/nf-core/gatk4/haplotypecaller/main'
+include { SAMTOOLS_VIEW as SAMTOOLS_VIEW_FIL20                     } from '../../../modules/nf-core/samtools/view/main'
+include { PICARD_SORTSAM                                           } from '../../../modules/nf-core/picard/sortsam/main'
+include { SAMTOOLS_FAIDX                                           } from '../../../modules/nf-core/samtools/faidx/main'
+include { PICARD_MARKDUPLICATES                                    } from '../../../modules/nf-core/picard/markduplicates/main'
+include { SAMTOOLS_INDEX as SAMTOOLS_INDEX_VARIANT_CALLING         } from '../../../modules/nf-core/samtools/index/main'
+include { PICARD_COLLECTMULTIPLEMETRICS                            } from '../../../modules/nf-core/picard/collectmultiplemetrics/main'
+include { PICARD_COLLECTINSERTSIZEMETRICS                          } from '../../../modules/nf-core/picard/collectinsertsizemetrics/main'
+include { SAMTOOLS_DEPTH                                           } from '../../../modules/nf-core/samtools/depth/main'
+include { PICARD_ADDORREPLACEREADGROUPS                            } from '../../../modules/nf-core/picard/addorreplacereadgroups/main' 
+include { SAMTOOLS_INDEX as SAMTOOLS_INDEX_MAPPING                 } from '../../../modules/nf-core/samtools/index/main'
+include { QUALIMAP_BAMQC                                           } from '../../../modules/nf-core/qualimap/bamqc/main'
+
+
+
+
+
+
+
+
+workflow VARIANT{
+
+        take:
+        ch_bwamem2_men_bam
+       
+
+        main:
+        def bwaidx_meta='fasta'
+        ch_fasta_genome_withmeta=tuple(bwaidx_meta, file(params.fasta))
+        ch_fasta_genome_withoutmeta=file(params.fasta)
+
+        PICARD_ADDORREPLACEREADGROUPS(
+        ch_bwamem2_men_bam
+        )
+        ch_bam_to_fil = PICARD_ADDORREPLACEREADGROUPS.out.bam
+
+        SAMTOOLS_INDEX_MAPPING(
+            PICARD_ADDORREPLACEREADGROUPS.out.bam
+        )
+        ch_samtools_index_mapping_bai = SAMTOOLS_INDEX_MAPPING.out.bai
+
+
+        QUALIMAP_BAMQC(
+            PICARD_ADDORREPLACEREADGROUPS.out.bam,
+            file("NOFILE")
+        )
+
+
+            // start sample variants calling
+        ch_bam_to_fil=PICARD_ADDORREPLACEREADGROUPS.out.bam
+        ch_bam_bai_to_fil=ch_bam_to_fil.join(ch_samtools_index_mapping_bai)       
+
+        SAMTOOLS_VIEW_FIL20(
+            ch_bam_bai_to_fil,
+            ch_fasta_genome_withmeta,
+            file("NOFILE")
+        )
+
+        PICARD_SORTSAM(
+            SAMTOOLS_VIEW_FIL20.out.bam,
+            "coordinate"
+        )
+        
+        SAMTOOLS_FAIDX(
+            ch_fasta_genome_withmeta
+        )
+        ch_fai_genome_withoutmeta=SAMTOOLS_FAIDX.out.fai.collect().flatten().toList().map{it -> it[1]}
+
+        PICARD_MARKDUPLICATES(
+            PICARD_SORTSAM.out.bam,
+            ch_fasta_genome_withmeta,
+            SAMTOOLS_FAIDX.out.fai
+        )
+
+        SAMTOOLS_INDEX_VARIANT_CALLING(
+            PICARD_MARKDUPLICATES.out.bam
+        )
+        
+        ch_bam_to_calling=PICARD_MARKDUPLICATES.out.bam
+        ch_bam_bai_to_calling=ch_bam_to_calling.join(SAMTOOLS_INDEX_VARIANT_CALLING.out.bai)
+        PICARD_COLLECTMULTIPLEMETRICS(
+            ch_bam_bai_to_calling,
+            ch_fasta_genome_withmeta,
+            SAMTOOLS_FAIDX.out.fai        
+        )
+
+        PICARD_COLLECTINSERTSIZEMETRICS(
+            ch_bam_to_calling       
+        )
+
+        depth_meta2="intervals"
+        SAMTOOLS_DEPTH(
+            ch_bam_to_calling,
+            tuple(depth_meta2, file("NOFILE"))
+        )
+        GATK4_CREATESEQUENCEDICTIONARY(
+            ch_fasta_genome_withmeta
+        )
+        ch_dict_genome_withoutmeta=GATK4_CREATESEQUENCEDICTIONARY.out.dict.collect().flatten().toList().map{it -> it[1]}
+
+        //haplotypecaller_intervals=tuple(file("NOFILE"),file("NOFILE"))
+        ch_hap_prepare_calling=ch_bam_bai_to_calling.map{it -> tuple(it[0],it[1],it[2],file("NOFILE1"),file("NOFILE2"))}
+        GATK4_HAPLOTYPECALLER_PREPARE(
+            ch_hap_prepare_calling,
+            ch_fasta_genome_withoutmeta,
+            ch_fai_genome_withoutmeta,
+            ch_dict_genome_withoutmeta,
+            file("NOFILE4"),
+            file("NOFILE5")
+        )
+        ch_vcf_tbi_selectvariants=GATK4_HAPLOTYPECALLER_PREPARE.out.vcf.join(GATK4_HAPLOTYPECALLER_PREPARE.out.tbi)
+        ch_vcf_tbi_intervals_selectvariants=ch_vcf_tbi_selectvariants.map{
+            it -> tuple(it[0],it[1],it[2],file("NOFILE"))
+        }
+        GATK4_SELECTVARIANTS_SNP(
+            ch_vcf_tbi_intervals_selectvariants
+        )
+
+        GATK4_SELECTVARIANTS_INDEL(
+            ch_vcf_tbi_intervals_selectvariants
+        )
+        
+        ch_tbi_variantfil_snp=GATK4_SELECTVARIANTS_SNP.out.vcf
+        ch_vcf_tbi_variantfil_snp=ch_tbi_variantfil_snp.join(GATK4_SELECTVARIANTS_SNP.out.tbi)
+        
+        index_fai_variantfil='fai'
+        index_dict_variantfil='dict'
+        GATK4_VARIANTFILTRATION_SNP(
+            ch_vcf_tbi_variantfil_snp,
+            ch_fasta_genome_withmeta,
+            SAMTOOLS_FAIDX.out.fai,
+            GATK4_CREATESEQUENCEDICTIONARY.out.dict
+        )
+
+        ch_tbi_variantfil_indel=GATK4_SELECTVARIANTS_INDEL.out.vcf
+        ch_vcf_tbi_variantfil_indel=ch_tbi_variantfil_indel.join(GATK4_SELECTVARIANTS_INDEL.out.tbi)
+        GATK4_VARIANTFILTRATION_INDEL(
+            ch_vcf_tbi_variantfil_indel,
+            ch_fasta_genome_withmeta,
+            SAMTOOLS_FAIDX.out.fai,
+            GATK4_CREATESEQUENCEDICTIONARY.out.dict
+        )
+
+        ch_vcf_tbi_selectvariants_snp_forbq=GATK4_VARIANTFILTRATION_SNP.out.vcf.join(GATK4_VARIANTFILTRATION_SNP.out.tbi)
+        ch_vcf_tbi_intervals_selectvariants_snp_forbq=ch_vcf_tbi_selectvariants_snp_forbq.map{
+            it -> tuple(it[0],it[1],it[2],file("NOFILE"))
+        }
+        GATK4_SELECTVARIANTS_SNP_BQ(
+            ch_vcf_tbi_intervals_selectvariants_snp_forbq
+        )
+
+        ch_vcf_tbi_selectvariants_indel_forbq=GATK4_VARIANTFILTRATION_INDEL.out.vcf.join(GATK4_VARIANTFILTRATION_INDEL.out.tbi)
+        ch_vcf_tbi_intervals_selectvariants_indel_forbq=ch_vcf_tbi_selectvariants_indel_forbq.map{
+            it -> tuple(it[0],it[1],it[2],file("NOFILE"))
+        }
+        GATK4_SELECTVARIANTS_INDEL_BQ(
+            ch_vcf_tbi_intervals_selectvariants_indel_forbq
+        )
+
+        ch_vcf_bqsr=GATK4_SELECTVARIANTS_SNP_BQ.out.vcf.join(GATK4_SELECTVARIANTS_INDEL_BQ.out.vcf)
+        ch_tbi_bqsr=GATK4_SELECTVARIANTS_SNP_BQ.out.tbi.join(GATK4_SELECTVARIANTS_INDEL_BQ.out.tbi)
+        ch_bam_bqsr=PICARD_MARKDUPLICATES.out.bam.join(SAMTOOLS_INDEX_VARIANT_CALLING.out.bai)
+        ch_bam_vcf_tbi_intervals_bqsr_join=ch_bam_bqsr.join(ch_vcf_bqsr).join(ch_tbi_bqsr)
+        ch_bam_vcf_tbi_intervals_bqsr=ch_bam_vcf_tbi_intervals_bqsr_join.map{
+                                            it -> 
+                                            def vcfforbqsr = [it[3],it[4]]
+                                            def tbiforbqsr = [it[5],it[6]]
+                                            tuple(it[0],it[1],it[2],file("NOFILE1"),vcfforbqsr,tbiforbqsr)
+                                        }
+        GATK4_BASERECALIBRATOR(
+            ch_bam_vcf_tbi_intervals_bqsr,
+            ch_fasta_genome_withoutmeta,
+            ch_fai_genome_withoutmeta,
+            ch_dict_genome_withoutmeta
+        )
+
+        ch_bam_bai_table_intervals_applybqsr=ch_bam_bqsr.join(GATK4_BASERECALIBRATOR.out.table).map{it -> tuple(it[0],it[1],it[2],it[3],file("NOFILE1"))}
+        GATK4_APPLYBQSR(
+            ch_bam_bai_table_intervals_applybqsr,
+            ch_fasta_genome_withoutmeta,
+            ch_fai_genome_withoutmeta,
+            ch_dict_genome_withoutmeta
+        )
+        SAMTOOLS_INDEX_BQSR(
+            GATK4_APPLYBQSR.out.bam
+        )
+
+        ch_bam_bqsr_stat=GATK4_APPLYBQSR.out.bam.join(SAMTOOLS_INDEX_BQSR.out.bai)
+        ch_bam_vcf_tbi_intervals_bqsrforstat_join=ch_bam_bqsr_stat.join(ch_vcf_bqsr).join(ch_tbi_bqsr)
+        ch_bam_vcf_tbi_intervals_bqsrforstat=ch_bam_vcf_tbi_intervals_bqsrforstat_join.map{
+                                            it -> 
+                                            def vcfforbqsr = [it[3],it[4]]
+                                            def tbiforbqsr = [it[5],it[6]]
+                                            tuple(it[0],it[1],it[2],file("NOFILE1"),vcfforbqsr,tbiforbqsr)
+                                        }
+        GATK4_BASERECALIBRATOR_FORSTAT(
+            ch_bam_vcf_tbi_intervals_bqsrforstat,
+            ch_fasta_genome_withoutmeta,
+            ch_fai_genome_withoutmeta,
+            ch_dict_genome_withoutmeta
+        )
+
+
+        ch_before_after_bqsr_analysis=GATK4_BASERECALIBRATOR.out.table.join(GATK4_BASERECALIBRATOR_FORSTAT.out.table)
+        GATK4_ANALYZECOVARIATES(
+            ch_before_after_bqsr_analysis
+        )
+
+        haplotypecaller_intervals=tuple(file("NOFILE1"),file("NOFILE2"))
+        ch_hap_gvcf_calling=ch_bam_bqsr_stat.map{it -> tuple(it[0],it[1],it[2],file("NOFILE1"),file("NOFILE2"))}
+        GATK4_HAPLOTYPECALLER_GVCF(
+            ch_hap_gvcf_calling,
+            ch_fasta_genome_withoutmeta,
+            ch_fai_genome_withoutmeta,
+            ch_dict_genome_withoutmeta,
+            file("NOFILE4"),
+            file("NOFILE5")
+        )
+
+    emit:
+    ch_gvcf_dbimport           = GATK4_HAPLOTYPECALLER_GVCF.out.vcf.map{ it -> it[1]}.collect().toList()
+    ch_tbi_dbimport            = GATK4_HAPLOTYPECALLER_GVCF.out.tbi.map{ it -> it[1]}.collect().toList()
+}
+process ANNO_CONVERT2ANNOVAR {
+    tag "${meta.id}"
+    label 'process_single'
+
+    //conda "${moduleDir}/environment.yml"
+    container "${'https://singularity/annovar-with-perl'}"
+
+    input:
+    tuple val(meta), path(vcf),path(tbi)
+
+    output:
+    tuple val(meta), path("*.var"), emit: anno
+    path "versions.yml"             , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def args = task.ext.args ?: ''
+    
+    """
+    convert2annovar.pl \
+        -format vcf4 \
+        -allsample \
+        -withfreq \
+        $vcf > ./${prefix}.var
+
+    
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        table_annovar: \$(echo \$(table_annovar.pl version 2>&1) )
+    END_VERSIONS
+    """
+}
+process ANNO_RETRIEVE_SEQ {
+    tag "${meta.id}"
+    label 'process_single'
+
+    //conda "${moduleDir}/environment.yml"
+    container "${'https://singularity/annovar-with-perl'}"
+
+    input:
+    tuple val(meta), path(genepred), path(fasta)
+
+    output:
+    tuple val(meta), path("*_refGeneMrna.fa"), emit: fa
+    path "versions.yml"             , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def args = task.ext.args ?: ''
+    
+    """
+    retrieve_seq_from_fasta.pl \\
+        --format refGene \\
+        --seqfile $fasta \\
+        $genepred \\
+        --out ${prefix}.fa
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        retrieve_seq_from_fasta: \$(echo \$(retrieve_seq_from_fasta.pl version 2>&1) )
+    END_VERSIONS
+    """
+
+}
+process ANNO_GFF3TOGENEPRED {
+    tag "${meta.id}"
+    label 'process_single'
+
+    //conda "${moduleDir}/environment.yml"
+    container "${'https://singularity/annovar-with-perl'}"
+
+    input:
+    tuple val(meta), path(gff3)
+
+    output:
+    tuple val(meta), path("*_refGene.txt"), emit: genep
+    path "versions.yml"             , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def args = task.ext.args ?: ''
+    """
+    gff3ToGenePred \\
+        $gff3 \\
+        ${prefix} \\
+
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gff3ToGenePred: \$(echo \$(gff3ToGenePred version 2>&1) )
+    END_VERSIONS
+    """
+
+}
+process ANNO_TABLE {
+    tag "${meta.id}"
+    label 'process_single'
+
+    //conda "${moduleDir}/environment.yml"
+    container "${'https://singularity/annovar-with-perl'}"
+
+    input:
+    tuple val(meta), path(vcf),path(tbi), path(fa), path(fa2), path(gff), path(list),path(anno)
+
+    output:
+    tuple val(meta), path("*.exonic_variant_function"), emit: annoevf
+    tuple val(meta), path("*.variant_function"), emit: annovf
+    path "versions.yml"             , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def args = task.ext.args ?: ''
+    
+    """
+    annotate_variation.pl \\
+        -geneanno \\
+        -dbtype refGene \\
+        -out $prefix \\
+        -build $meta.id\\
+        $anno \\
+        .
+
+    
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        table_annovar: \$(echo \$(table_annovar.pl version 2>&1) )
+    END_VERSIONS
+    """
+
+    
+    //BUILD_DOC=`find -L ./ -name "*.list" | sed 's/\\${meta.id}_refGene.list\$//'`
+    /*
+    """
+    table_annovar.pl \\
+        $vcf \\
+        . \\
+        -buildver $meta.id \\
+        -out ${prefix}\\
+        -protocol refGene \\
+        -operation g \\
+        -nastring . \\
+        -vcfinput
+    
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        table_annovar: \$(echo \$(table_annovar.pl version 2>&1) )
+    END_VERSIONS
+    """
+    */
+}
+process FILTER_PASS_VARIANT {
+    tag "$meta.id"
+    label 'process_single'
+    container "${'https://singularity/filter-pass-variant'}"
+//    conda "${moduleDir}/environment.yml"
+//    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+//        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+//        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+
+    input:
+    tuple val(meta), path(vcf), path(tbi)
+
+    output:
+    tuple val(meta), path("*.vcf.gz"), emit: vcf
+
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[Fillter pass variant] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gzip -cd ${vcf} | perl -ne 'print if /^#/ or /PASS/' | bgzip -c > ${prefix}.vcf.gz
+    
+    """
+}process GATK4_ANALYZECOVARIATES{
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "bioconda::gatk4=4.4.0.0"
+    //container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+    //    'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+    //    'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+    container "${'https://singularity/gatk4withr'}"
+
+    input:
+    tuple val(meta), path(input_before_bqsr), path(input_after_bqsr)
+
+    output:
+    tuple val(meta), path("*.pdf")       , emit: pdf
+    //path "versions.yml"                  , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def avail_mem = 3072
+
+    if (!task.memory) {
+        log.info '[GATK AnalyzeCovariates] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M" AnalyzeCovariates \\
+        -before $input_before_bqsr \\
+        -after $input_after_bqsr \\
+        -plots ${prefix}.pdf \\
+        --tmp-dir . \\
+        $args
+    """
+    /*
+    """
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+    */
+    stub:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+   
+    /*
+    """
+    touch ${prefix}.pdf
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+    */
+}
+process GATK4_GATHERVCFS {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(vcf), path(tbi)
+
+    output:
+    tuple val(meta), path("*.vcf.gz"), emit: vcf
+    tuple val(meta), path("*.{tbi,idx}"), emit: tbi
+    path "versions.yml"             , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def input_list = vcf.collect{"-I ${it}"}.join(' ')
+
+    def avail_mem = 16000
+    if (!task.memory) {
+        log.info '[GATK GatherVcfs] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        GatherVcfs \\
+        $input_list \\
+        -O ${prefix}.vcf.gz \\
+        $args
+    
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        IndexFeatureFile \\
+        --input ${prefix}.vcf.gz \\
+        --tmp-dir . \\
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}process GCTA_MAKEGRM {
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/gcta'}"
+
+    input:
+    tuple val(meta), path(ped), path(map), path(bed), path(bim), path(fam) ,path(nosex) ,path(log)
+
+    // Define output files
+    output:
+    tuple val(meta), path("*grm.N.bin"), path("*.grm.bin") ,path("*.grm.id") ,path("*.log")  ,emit: grm
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+
+    """
+    pedname=\$(echo $ped| sed 's/\\.ped\$//g')
+    gcta64 \\
+    --bfile \$pedname \\
+    --make-grm \\
+    --out grm_\$pedname
+
+
+    """
+
+    
+}process GCTA_PCA {
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/gcta'}"
+
+    input:
+    tuple val(meta), path(grmnbin), path(grmbin) ,path(grmid) ,path(log)
+    // Define output files
+    output:
+    tuple val(meta), path("*.eigenval") ,path("*.eigenvec") , emit: vec
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+
+    """
+    samplenum=\$(cat $grmid|wc -l)
+    grmname=\$(echo $grmid|sed 's/\\.grm\\.id//g')
+    gcta64 \\
+    --grm \$grmname \\
+    --pca \$samplenum \\
+    --out \$grmname
+
+    """
+
+    
+}process GET_CHROMSOME_LST {
+    tag "$fasta"
+    label 'process_single'
+
+    input:
+    path(fasta)
+    //tuple val(meta2), path(fai)
+
+    output:
+    path ("*.list") , emit: lst
+    //path "versions.yml"                    , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    """
+        grep ">" ${fasta}|sed 's/>//g' > allseq.list
+        grep ">" ${fasta}|sed 's/>//g'|awk '{if(/^Chr|^[0-9]|^[0-9](2)|^NC_/){print \$1}}' > chrom.list
+        grep ">" ${fasta}|sed 's/>//g'|awk '{if(!/^Chr|^[0-9]|^[0-9](2)|^NC_/){print \$1}}' > ctg.list
+
+    """
+}
+process GWAS_EMMAX_ANNOTATION {
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/admixture'}"
+
+    input:
+    tuple val(meta), path(signif), path(annov)
+
+    // Define output files
+    output:
+    tuple val(meta), path("*.anno") ,emit: anno
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+
+    """
+        less -S $annov| \
+        awk -v FS='\\t' -v OFS='\\t' '{if(\$4==a && \$5==b){\$2=c"##"\$2;\$3=d"##"\$3;\$7=e"##"\$7;\$8=f"##"\$8;}else{print g;}a=\$4;b=\$5;c=\$2;d=\$3;e=\$7;f=\$8;g=\$0}END{print g}'|
+        tail -n +2|
+        awk -F '\\t' '{a=\$3;gsub(/:.*\$/,"",a);b=\$4;gsub(/[Chr|Ctg]/,"",b);gsub(/gene-/,"",a);print b":"\$5"\\t"a"\\t"\$0}'|
+        sort -k 1b,1 > ${signif}.annotations_groupbysnp.lst
+
+        sort -k 1b,1 $signif|join -i - ${signif}.annotations_groupbysnp.lst|sort -gk3,1 -gk2,2 -s > ${signif}.anno
+
+    """
+
+    
+}process GWAS_EMMAX_ASSOCIATE {
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/emmax'}"
+
+    input:
+    tuple val(meta), path(tped), path(tfam), path(nosex), path(log), path(kin), path(cov), path(phy), val(whichphy), val(phycol), val(korkq)
+
+    // Define output files
+    output:
+    tuple val(meta), val("${meta.id}_${whichphy}_${korkq}"), path("*.ps") ,emit: assoc
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+        def covarities = cov ? "-c ${cov}" : ''
+        def prefix = task.ext.prefix ?: "${meta.id}_${whichphy}_${korkq}"
+        def phycolnum=phycol+1
+    
+    """
+    emmainname=\$(echo $tped| sed 's/\\.tped\$//g')
+    awk '{print \$1}' $tfam |xargs -i grep {} $phy| awk -F ',' '{print \$1"\\t"\$1"\\t"\$${phycolnum}}' > ${prefix}.phy
+
+    emmax-intel64 \\
+        -t \$emmainname \\
+        -o ${prefix}_emmax \\
+        -p ${prefix}.phy \\
+        -k $kin
+
+    """
+    // \\
+    //$covarities
+
+    
+}process GWAS_EMMAX_CMPLOT {
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/emmax-anno'}"
+
+    input:
+    tuple val(meta), val(pfid), path(qk)
+
+    // Define output files
+    output:
+    tuple val(meta), path("*.lst") ,emit: signif
+    tuple val(meta), path("*.jpg") ,emit: jpg
+    //tuple val(meta), path("*.log") ,emit: log
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+
+    """
+    gwas_emmax_cmplot.R \\
+    $qk \\
+    > ${pfid}.Rout
+
+
+    """
+
+    
+}process GWAS_EMMAX_KINSHIP {
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/emmax'}"
+
+    input:
+    tuple val(meta), path(tped), path(tfam), path(nosex), path(log)
+
+    // Define output files
+    output:
+    tuple val(meta), path("*.kinf") ,emit: kin
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+
+    """
+    emmainname=\$(echo $tped| sed 's/\\.tped\$//g')
+
+    emmax-kin-intel64 \\
+        \$emmainname \\
+        -v \\
+        -d 10 \\
+        -o ${meta.id}.BN.kinf
+
+
+    """
+
+    
+}
+process GWAS_EMMAX_PLINK_FMAT {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/plink:1.90b6.21--h779adbc_1':
+        'biocontainers/plink:1.90b6.21--h779adbc_1' }"
+
+    input:
+    tuple val(meta), path(vcf), path(tbi), val(chrnum), val(allctgnum)
+    //val(window_size)
+    //val(variant_count)
+    //val(variance_inflation_factor)
+
+    output:
+    tuple val(meta), path("*.tped"), path("*.tfam"), path("*.nosex"), path("*.log"), emit: emmaxfile
+    path "versions.yml"                                    , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+
+    """
+    chrn=\$(seq -s, 1 $chrnum)
+    plink \\
+        --vcf $vcf \\
+        --recode 12 transpose \\
+        --output-missing-genotype 0 \\
+        --out emmmax_${prefix} \\
+        --allow-extra-chr \\
+        --chr \$chrn \\
+        --chr-set $chrnum \\
+        $args
+    
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        plink: \$(echo \$(plink --version) | sed 's/^PLINK v//;s/64.*//')
+    END_VERSIONS
+    """
+}
+process EMMAX_VCF_GROUPPING {
+    tag "$meta.id"
+    label 'process_single'
+
+    container "${'https://singularity/vcftools-groupping'}"
+
+    input:
+    tuple val(meta), val(gsample), path(vcf), path(tbi)
+
+    // Define output files
+    output:
+    tuple val(meta), path("*.vcf.gz") ,path("*.tbi") ,emit: vcf
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def indv_command = gsample.collect(itpth -> "--indv ${itpth}").join(' ')
+    //println("good")
+    """
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+    vcftools \\
+        --gzvcf $vcf \\
+        $indv_command \\
+        --recode \\
+        --stdout | bgzip -c > ${meta.id}_group.vcf.gz
+    
+    tabix ${meta.id}_group.vcf.gz
+
+    """
+}process MERGE_FASTQ {
+    tag "$sampleID"
+    label 'process_single'
+    // Define input channel
+    input:
+    tuple val(sampleID), val(sampleType),val(single_end), path(fastq1), path(fastq2)
+
+    // Define output files
+    output:
+    
+    tuple val(sampleID), path('*.fastq.gz') , emit: reads
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    
+    if (sampleType.size() > 1)
+    {
+        // Merge _1.fq.gz and _2.fq.gz separately when multiple types exist
+    """
+        cat ${fastq1} > ${sampleID}_1.fastq.gz
+        cat ${fastq2} > ${sampleID}_2.fastq.gz
+    """
+    } else {
+        // Create symbolic links for single types
+    """
+        ln -s ${fastq1} ${sampleID}_1.fastq.gz
+        ln -s ${fastq2} ${sampleID}_2.fastq.gz
+    """
+    }
+    
+}process PCA_VCF_ADDID {
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/admixture'}"
+
+    input:
+    tuple val(meta), path(vcf), path(tbi)
+
+    // Define output files
+    output:
+    tuple val(meta), path("*.vcf.gz") ,path("*.tbi"), env(chrnum) ,emit: vcf
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+
+    """
+        bgzip -dc $vcf|\
+        awk -v FS='\t' -v OFS='\t' '{if(/^##contig=<ID=/){a=\$0;gsub(/[Ctg|Chr]/,"",a);print a;}else if(/^#/){print \$0;}else{a=\$1;gsub(/[a-zA-Z]+/,"",a);\$1=a;\$3=a":"\$2;print \$0}}'|\
+        bgzip -c > ${meta.id}.vcf.gz
+
+        tabix ${meta.id}.vcf.gz
+
+
+    """
+
+    
+}
+process PLINK_MAKEBED {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/plink:1.90b6.21--h779adbc_1':
+        'biocontainers/plink:1.90b6.21--h779adbc_1' }"
+
+    input:
+    tuple val(meta), path(ped), path(map)
+    //val(window_size)
+    //val(variant_count)
+    //val(variance_inflation_factor)
+
+    output:
+    tuple val(meta), path("*.bed"), path("*.bim"), path("*.fam") ,path("*.nosex") ,path("*.log"), emit: bed
+    path "versions.yml"                                    , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+
+    """
+    pedname=\$(echo $ped| sed 's/\\.ped\$//g')
+    plink \\
+        --file \$pedname\\
+        --threads $task.cpus \\
+        --make-bed --allow-extra-chr --noweb \\
+        --out \$pedname \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        plink: \$(echo \$(plink --version) | sed 's/^PLINK v//;s/64.*//')
+    END_VERSIONS
+    """
+}
+process SAMPLESHEET_CHECK {
+    tag "$samplesheet"
+    label 'process_single'
+
+    conda "conda-forge::python=3.8.3"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/python:3.8.3' :
+        'biocontainers/python:3.8.3' }"
+
+    input:
+    path samplesheet
+
+    output:
+    path '*.csv'       , emit: csv
+    path "versions.yml", emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script: // This script is bundled with the pipeline, in nf-core/test/bin/
+    """
+    check_samplesheet.py \\
+        $samplesheet \\
+        samplesheet.valid.csv
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        python: \$(python --version | sed 's/Python //g')
+    END_VERSIONS
+    """
+}
+process STURCTURE_VCF_ADDID {
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/admixture'}"
+
+    input:
+    tuple val(meta), path(vcf), path(tbi)
+
+    // Define output files
+    output:
+    tuple val(meta), path("*.vcf.gz") ,path("*.tbi"), env(chrnum) ,emit: vcf
+    tuple val(meta), env(allctgnum), emit: ctgnum
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+
+    """
+        chrnum=\$(bgzip -dc $vcf | grep -E "##contig=<ID=Chr[0-9]+," | wc -l)
+        allctgnum=\$(bgzip -dc $vcf | grep -E "##contig=<ID=" | wc -l)
+
+        bgzip -dc $vcf|\
+        awk -v FS='\\t' -v OFS='\\t' '{if(/^#/){print \$0}else{a=\$1;gsub(/[Ctg|Chr]/,"",a);\$3=a":"\$2;print \$0}}'|\
+        bgzip -c > ${meta.id}.vcf.gz
+
+        tabix ${meta.id}.vcf.gz
+
+        echo "chrnum_output=\$chrnum" > ${meta.id}.chrnum.txt
+    """
+
+    
+}process VCFTOOLS_PLINK {
+    tag "$meta.id"
+    label 'process_single'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/vcftools:0.1.16--he513fc3_4' :
+        'biocontainers/vcftools:0.1.16--he513fc3_4' }"
+
+    input:
+    tuple val(meta), path(vcf), path(tbi), val(chrnum), path(prunein)
+
+    output:
+    tuple val(meta), path("*.ped"), path("*.map")     , emit: plink
+    path "versions.yml"                               , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    
+    """
+
+    vcftools \\
+        --gzvcf $vcf \\
+        --snps $prunein \\
+        --plink \\
+        --out $prefix
+
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        vcftools: \$(echo \$(vcftools --version 2>&1) | sed 's/^.*VCFtools (//;s/).*//')
+    END_VERSIONS
+    """
+}
+process GCTA_PCA_PLOT{
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/emmax-anno'}"
+
+    input:
+    tuple val(meta),path(eigenvec)
+
+    output:
+    tuple val(meta),path("*.png")
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    """
+    gcta_pca_plot.R \\
+    $eigenvec \\
+    >${eigenvec}.Rplotout
+    
+    """
+
+
+
+}
+process GWAS_EMMAX_COV {
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/admixture'}"
+
+    input:
+    tuple val(meta), path(pfile), path(log), path(tfam)
+
+    // Define output files
+    output:
+    tuple val(meta), path("*.cov") , emit: cov
+    tuple val(meta), path("*.cverror") , emit: cverr     
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+
+    """
+        knum=\$(grep "CV error" *K*.log|sed 's/.*=//g;s/): /\\t/g'|sort -gk1|awk '{a=prev-\$2;if(NR>1 && a<0){print k;exit;};prev=\$2;k=\$1;}')
+        samplenum=\$(cat $tfam|wc -l)
+        if [ "\$samplenum" -le "\$knum" ]; then
+            ((knum=samplenum-2))
+        fi
+        cat $tfam|awk '{print \$1"\\t"\$1"\\t"1}'|paste - *.\$knum.Q|sed 's/ /\\t/g' > ${meta.id}.emmax.cov
+        grep "CV error" *K*.log|sed 's/.*=//g;s/): /\t/g'|sort -gk1|awk '{print \$1,\$2}' > ${meta.id}.emmax.cverror
+
+    """
+
+    
+}
+process STRUCTURE_PLOT{
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+    container "${'https://singularity/emmax-anno'}"
+
+    input:
+    tuple val(meta),path(cverr)
+
+    output:
+    tuple val(meta),path("*.png")
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    """
+    structure_plot.R \\
+    $cverr \\
+    >${cverr}.Rplotout
+    
+    """
+
+
+
+}
+
+process ADMIXTURE {
+    tag "$meta.id"
+    label 'process_single'
+
+    conda "${moduleDir}/environment.yml"
+    container "${'https://singularity/admixture'}"
+
+    input:
+    tuple val(meta), path (bed), path(bim), path(fam), val(K)
+
+    output:
+    tuple val(meta), path("*.Q")    , emit: ancestry_fractions
+    tuple val(meta), path("*.P")    , emit: allele_frequencies
+    tuple val(meta), path("*.log")  , emit: cvlog
+    path "versions.yml"             , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+
+
+    """
+    admixture \\
+        --cv $bed \\
+        $K \\
+        -j$task.cpus \\
+        >> ${meta.id}_K${K}.log
+  
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        admixture: \$(echo \$(admixture 2>&1) | head -n 1 | grep -o "ADMIXTURE Version [0-9.]*" | sed 's/ADMIXTURE Version //' )
+    END_VERSIONS
+
+    """
+}
+process FASTP {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/fastp:0.23.4--h5f740d0_0' :
+        'biocontainers/fastp:0.23.4--h5f740d0_0' }"
+
+    input:
+    tuple val(meta), path(reads)
+    path  adapter_fasta
+    val   save_trimmed_fail
+    val   save_merged
+
+    output:
+    tuple val(meta), path('*.fastp.fastq.gz') , optional:true, emit: reads
+    tuple val(meta), path('*.json')           , emit: json
+    tuple val(meta), path('*.html')           , emit: html
+    tuple val(meta), path('*.log')            , emit: log
+    path "versions.yml"                       , emit: versions
+    tuple val(meta), path('*.fail.fastq.gz')  , optional:true, emit: reads_fail
+    tuple val(meta), path('*.merged.fastq.gz'), optional:true, emit: reads_merged
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def adapter_list = adapter_fasta ? "--adapter_fasta ${adapter_fasta}" : ""
+    def fail_fastq = save_trimmed_fail && meta.single_end ? "--failed_out ${prefix}.fail.fastq.gz" : save_trimmed_fail && !meta.single_end ? "--unpaired1 ${prefix}_1.fail.fastq.gz --unpaired2 ${prefix}_2.fail.fastq.gz" : ''
+    // Added soft-links to original fastqs for consistent naming in MultiQC
+    // Use single ended for interleaved. Add --interleaved_in in config.
+    if ( task.ext.args?.contains('--interleaved_in') ) {
+        """
+        [ ! -f  ${prefix}.fastq.gz ] && ln -sf $reads ${prefix}.fastq.gz
+        echo "222222222222"
+        fastp \\
+            --stdout \\
+            --in1 ${prefix}.fastq.gz \\
+            --thread $task.cpus \\
+            --json ${prefix}.fastp.json \\
+            --html ${prefix}.fastp.html \\
+            $adapter_list \\
+            $fail_fastq \\
+            $args \\
+            2> ${prefix}.fastp.log \\
+        | gzip -c > ${prefix}.fastp.fastq.gz
+        
+     cat <<-END_VERSIONS > versions.yml
+        "${task.process}":
+            fastp: \$(fastp --version 2>&1 | sed -e "s/fastp //g")
+        END_VERSIONS
+        """
+    } else if (meta.single_end) {
+        """
+        [ ! -f  ${prefix}.fastq.gz ] && ln -sf $reads ${prefix}.fastq.gz
+
+        fastp \\
+            --in1 ${prefix}.fastq.gz \\
+            --out1  ${prefix}.fastp.fastq.gz \\
+            --thread $task.cpus \\
+            --json ${prefix}.fastp.json \\
+            --html ${prefix}.fastp.html \\
+            $adapter_list \\
+            $fail_fastq \\
+            $args \\
+            2> ${prefix}.fastp.log
+
+        cat <<-END_VERSIONS > versions.yml
+        "${task.process}":
+            fastp: \$(fastp --version 2>&1 | sed -e "s/fastp //g")
+        END_VERSIONS
+        """
+    } else {
+        def merge_fastq = save_merged ? "-m --merged_out ${prefix}.merged.fastq.gz" : ''
+        """
+        [ ! -f  ${prefix}_1.fastq.gz ] && ln -sf ${reads[0]} ${prefix}_1.fastq.gz
+        [ ! -f  ${prefix}_2.fastq.gz ] && ln -sf ${reads[1]} ${prefix}_2.fastq.gz
+        fastp \\
+            --in1 ${prefix}_1.fastq.gz \\
+            --in2 ${prefix}_2.fastq.gz \\
+            --out1 ${prefix}_1.fastp.fastq.gz \\
+            --out2 ${prefix}_2.fastp.fastq.gz \\
+            --json ${prefix}.fastp.json \\
+            --html ${prefix}.fastp.html \\
+            $adapter_list \\
+            $fail_fastq \\
+            $merge_fastq \\
+            --thread $task.cpus \\
+            --detect_adapter_for_pe \\
+            $args \\
+            2> ${prefix}.fastp.log
+
+        cat <<-END_VERSIONS > versions.yml
+        "${task.process}":
+            fastp: \$(fastp --version 2>&1 | sed -e "s/fastp //g")
+        END_VERSIONS
+        """
+    }
+}
+process FASTQC {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "bioconda::fastqc=0.11.9"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/fastqc:0.11.9--0' :
+        'quay.io/biocontainers/fastqc:0.11.9--0' }"
+
+    input:
+    tuple val(meta), path(reads)
+
+    output:
+    tuple val(meta), path("*.html"), emit: html
+    tuple val(meta), path("*.zip") , emit: zip
+    path  "versions.yml"           , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    // Make list of old name and new name pairs to use for renaming in the bash while loop
+    def old_new_pairs = reads instanceof Path || reads.size() == 1 ? [[ reads, "${prefix}.${reads.extension}" ]] : reads.withIndex().collect { entry, index -> [ entry, "${prefix}_${index + 1}.${entry.extension}" ] }
+    def rename_to = old_new_pairs*.join(' ').join(' ')
+    def renamed_files = old_new_pairs.collect{ old_name, new_name -> new_name }.join(' ')
+    """
+    printf "%s %s\\n" $rename_to | while read old_name new_name; do
+        [ -f "\${new_name}" ] || ln -s \$old_name \$new_name
+    done
+    fastqc $args --threads $task.cpus $renamed_files
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        fastqc: \$( fastqc --version | sed -e "s/FastQC v//g" )
+    END_VERSIONS
+    """
+
+    stub:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    """
+    touch ${prefix}.html
+    touch ${prefix}.zip
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        fastqc: \$( fastqc --version | sed -e "s/FastQC v//g" )
+    END_VERSIONS
+    """
+}
+process FASTTREE {
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/fasttree:2.1.10--h516909a_4' :
+        'biocontainers/fasttree:2.1.10--h516909a_4' }"
+
+    input:
+    path alignment
+
+    output:
+    path "*.tre",         emit: phylogeny
+    path "versions.yml" , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    """
+    fasttree \\
+        $args \\
+        -log fasttree_phylogeny.tre.log \\
+        -nt $alignment \\
+        > fasttree_phylogeny.tre
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        fasttree: \$(fasttree -help 2>&1 | head -1  | sed 's/^FastTree \\([0-9\\.]*\\) .*\$/\\1/')
+    END_VERSIONS
+    """
+}
+process GUNZIP {
+    input:
+    tuple val(meta),path(gzfile)
+
+    output:
+    tuple val(meta),path("$gunzip"),emit:gunzip
+    
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?:''
+    gunzip = gzfile.toString() - '.gz'
+
+    """
+    gzip \\
+        -cd \\
+        $args \\
+        $gzfile \\
+        > $gunzip
+    
+    """
+}process MULTIQC {
+    label 'process_single'
+
+    conda "bioconda::multiqc=1.14"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/multiqc:1.14--pyhdfd78af_0' :
+        'quay.io/biocontainers/multiqc:1.14--pyhdfd78af_0' }"
+
+    input:
+    path  multiqc_files, stageAs: "?/*"
+    path(multiqc_config)
+    path(extra_multiqc_config)
+    path(multiqc_logo)
+
+    output:
+    path "*multiqc_report.html", emit: multiqc_report
+    path "*_data"              , emit: data
+    path "*_plots"             , optional:true, emit: plots
+    path "versions.yml"        , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def config = multiqc_config ? "--config $multiqc_config" : ''
+    def extra_config = extra_multiqc_config ? "--config $extra_multiqc_config" : ''
+    """
+    multiqc \\
+        --force \\
+        $args \\
+        $config \\
+        $extra_config \\
+        .
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        multiqc: \$( multiqc --version | sed -e "s/multiqc, version //g" )
+    END_VERSIONS
+    """
+
+    stub:
+    """
+    touch multiqc_data
+    touch multiqc_plots
+    touch multiqc_report.html
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        multiqc: \$( multiqc --version | sed -e "s/multiqc, version //g" )
+    END_VERSIONS
+    """
+}
+process VCFTOOLS {
+    tag "$meta.id"
+    label 'process_single'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/vcftools:0.1.16--he513fc3_4' :
+        'biocontainers/vcftools:0.1.16--he513fc3_4' }"
+
+    input:
+    // Owing to the nature of vcftools we here provide solutions to working with optional bed files and optional
+    // alternative variant files, for use with the 'diff' suite of tools.
+    // Other optional input files can be utilised in a similar way to below but we do not exhaustively itterate through all
+    // possible options. Instead we leave that to the user.
+    tuple val(meta), path(variant_file)
+    path  bed
+    path  diff_variant_file
+
+    output:
+    tuple val(meta), path("*.vcf")                    , optional:true, emit: vcf
+    tuple val(meta), path("*.bcf")                    , optional:true, emit: bcf
+    tuple val(meta), path("*.frq")                    , optional:true, emit: frq
+    tuple val(meta), path("*.frq.count")              , optional:true, emit: frq_count
+    tuple val(meta), path("*.idepth")                 , optional:true, emit: idepth
+    tuple val(meta), path("*.ldepth")                 , optional:true, emit: ldepth
+    tuple val(meta), path("*.ldepth.mean")            , optional:true, emit: ldepth_mean
+    tuple val(meta), path("*.gdepth")                 , optional:true, emit: gdepth
+    tuple val(meta), path("*.hap.ld")                 , optional:true, emit: hap_ld
+    tuple val(meta), path("*.geno.ld")                , optional:true, emit: geno_ld
+    tuple val(meta), path("*.geno.chisq")             , optional:true, emit: geno_chisq
+    tuple val(meta), path("*.list.hap.ld")            , optional:true, emit: list_hap_ld
+    tuple val(meta), path("*.list.geno.ld")           , optional:true, emit: list_geno_ld
+    tuple val(meta), path("*.interchrom.hap.ld")      , optional:true, emit: interchrom_hap_ld
+    tuple val(meta), path("*.interchrom.geno.ld")     , optional:true, emit: interchrom_geno_ld
+    tuple val(meta), path("*.TsTv")                   , optional:true, emit: tstv
+    tuple val(meta), path("*.TsTv.summary")           , optional:true, emit: tstv_summary
+    tuple val(meta), path("*.TsTv.count")             , optional:true, emit: tstv_count
+    tuple val(meta), path("*.TsTv.qual")              , optional:true, emit: tstv_qual
+    tuple val(meta), path("*.FILTER.summary")         , optional:true, emit: filter_summary
+    tuple val(meta), path("*.sites.pi")               , optional:true, emit: sites_pi
+    tuple val(meta), path("*.windowed.pi")            , optional:true, emit: windowed_pi
+    tuple val(meta), path("*.weir.fst")               , optional:true, emit: weir_fst
+    tuple val(meta), path("*.het")                    , optional:true, emit: heterozygosity
+    tuple val(meta), path("*.hwe")                    , optional:true, emit: hwe
+    tuple val(meta), path("*.Tajima.D")               , optional:true, emit: tajima_d
+    tuple val(meta), path("*.ifreqburden")            , optional:true, emit: freq_burden
+    tuple val(meta), path("*.LROH")                   , optional:true, emit: lroh
+    tuple val(meta), path("*.relatedness")            , optional:true, emit: relatedness
+    tuple val(meta), path("*.relatedness2")           , optional:true, emit: relatedness2
+    tuple val(meta), path("*.lqual")                  , optional:true, emit: lqual
+    tuple val(meta), path("*.imiss")                  , optional:true, emit: missing_individual
+    tuple val(meta), path("*.lmiss")                  , optional:true, emit: missing_site
+    tuple val(meta), path("*.snpden")                 , optional:true, emit: snp_density
+    tuple val(meta), path("*.kept.sites")             , optional:true, emit: kept_sites
+    tuple val(meta), path("*.removed.sites")          , optional:true, emit: removed_sites
+    tuple val(meta), path("*.singletons")             , optional:true, emit: singeltons
+    tuple val(meta), path("*.indel.hist")             , optional:true, emit: indel_hist
+    tuple val(meta), path("*.hapcount")               , optional:true, emit: hapcount
+    tuple val(meta), path("*.mendel")                 , optional:true, emit: mendel
+    tuple val(meta), path("*.FORMAT")                 , optional:true, emit: format
+    tuple val(meta), path("*.INFO")                   , optional:true, emit: info
+    tuple val(meta), path("*.012")                    , optional:true, emit: genotypes_matrix
+    tuple val(meta), path("*.012.indv")               , optional:true, emit: genotypes_matrix_individual
+    tuple val(meta), path("*.012.pos")                , optional:true, emit: genotypes_matrix_position
+    tuple val(meta), path("*.impute.hap")             , optional:true, emit: impute_hap
+    tuple val(meta), path("*.impute.hap.legend")      , optional:true, emit: impute_hap_legend
+    tuple val(meta), path("*.impute.hap.indv")        , optional:true, emit: impute_hap_indv
+    tuple val(meta), path("*.ldhat.sites")            , optional:true, emit: ldhat_sites
+    tuple val(meta), path("*.ldhat.locs")             , optional:true, emit: ldhat_locs
+    tuple val(meta), path("*.BEAGLE.GL")              , optional:true, emit: beagle_gl
+    tuple val(meta), path("*.BEAGLE.PL")              , optional:true, emit: beagle_pl
+    tuple val(meta), path("*.ped")                    , optional:true, emit: ped
+    tuple val(meta), path("*.map")                    , optional:true, emit: map_
+    tuple val(meta), path("*.tped")                   , optional:true, emit: tped
+    tuple val(meta), path("*.tfam")                   , optional:true, emit: tfam
+    tuple val(meta), path("*.diff.sites_in_files")    , optional:true, emit: diff_sites_in_files
+    tuple val(meta), path("*.diff.indv_in_files")     , optional:true, emit: diff_indv_in_files
+    tuple val(meta), path("*.diff.sites")             , optional:true, emit: diff_sites
+    tuple val(meta), path("*.diff.indv")              , optional:true, emit: diff_indv
+    tuple val(meta), path("*.diff.discordance.matrix"), optional:true, emit: diff_discd_matrix
+    tuple val(meta), path("*.diff.switch")            , optional:true, emit: diff_switch_error
+    path "versions.yml"                               , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def args_list = args.tokenize()
+
+    def bed_arg  = (args.contains('--bed')) ? "--bed ${bed}" :
+        (args.contains('--exclude-bed')) ? "--exclude-bed ${bed}" :
+        (args.contains('--hapcount')) ? "--hapcount ${bed}" : ''
+    args_list.removeIf { it.contains('--bed') }
+    args_list.removeIf { it.contains('--exclude-bed') }
+    args_list.removeIf { it.contains('--hapcount') }
+
+    def diff_variant_arg = (args.contains('--diff')) ? "--diff ${diff_variant_file}" :
+        (args.contains('--gzdiff')) ? "--gzdiff ${diff_variant_file}" :
+        (args.contains('--diff-bcf')) ? "--diff-bcf ${diff_variant_file}" : ''
+    args_list.removeIf { it.contains('--diff') }
+    args_list.removeIf { it.contains('--gzdiff') }
+    args_list.removeIf { it.contains('--diff-bcf') }
+
+    def input_file = ("$variant_file".endsWith(".vcf")) ? "--vcf ${variant_file}" :
+        ("$variant_file".endsWith(".vcf.gz")) ? "--gzvcf ${variant_file}" :
+        ("$variant_file".endsWith(".bcf")) ? "--bcf ${variant_file}" : ''
+
+    """
+    vcftools \\
+        $input_file \\
+        --out $prefix \\
+        ${args_list.join(' ')} \\
+        $bed_arg \\
+        $diff_variant_arg
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        vcftools: \$(echo \$(vcftools --version 2>&1) | sed 's/^.*VCFtools (//;s/).*//')
+    END_VERSIONS
+    """
+}
+process BWAMEM2_INDEX {
+    tag "$fasta"
+    label 'process_single'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/bwa-mem2:2.2.1--he513fc3_0' :
+        'biocontainers/bwa-mem2:2.2.1--he513fc3_0' }"
+
+    input:
+    tuple val(meta), path(fasta)
+
+    output:
+    tuple val(meta), path("bwamem2"), emit: index
+    path "versions.yml"             , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def prefix = task.ext.prefix ?: "${fasta}"
+    def args = task.ext.args ?: ''
+    """
+    mkdir bwamem2
+    bwa-mem2 \\
+        index \\
+        $args \\
+        $fasta -p bwamem2/${prefix}
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        bwamem2: \$(echo \$(bwa-mem2 version 2>&1) | sed 's/.* //')
+    END_VERSIONS
+    """
+
+    stub:
+    def prefix = task.ext.prefix ?: "${fasta}"
+
+    """
+    mkdir bwamem2
+    touch bwamem2/${prefix}.0123
+    touch bwamem2/${prefix}.ann
+    touch bwamem2/${prefix}.pac
+    touch bwamem2/${prefix}.amb
+    touch bwamem2/${prefix}.bwt.2bit.64
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        bwamem2: \$(echo \$(bwa-mem2 version 2>&1) | sed 's/.* //')
+    END_VERSIONS
+    """
+}
+process BWAMEM2_MEM {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/mulled-v2-e5d375990341c5aef3c9aff74f96f66f65375ef6:2cdf6bf1e92acbeb9b2834b1c58754167173a410-0' :
+        'biocontainers/mulled-v2-e5d375990341c5aef3c9aff74f96f66f65375ef6:2cdf6bf1e92acbeb9b2834b1c58754167173a410-0' }"
+
+    input:
+    tuple val(meta), path(reads)
+    tuple val(meta2), path(index)
+    val   sort_bam
+
+    output:
+    tuple val(meta), path("*.bam"), emit: bam
+    path  "versions.yml"          , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def args2 = task.ext.args2 ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def samtools_command = sort_bam ? 'sort' : 'view'
+    """
+    INDEX=`find -L ./ -name "*.amb" | sed 's/\\.amb\$//'`
+
+    bwa-mem2 \\
+        mem \\
+        $args \\
+        -t $task.cpus \\
+        \$INDEX \\
+        $reads \\
+        | samtools $samtools_command $args2 -@ $task.cpus -o ${prefix}.bam -
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        bwamem2: \$(echo \$(bwa-mem2 version 2>&1) | sed 's/.* //')
+        samtools: \$(echo \$(samtools --version 2>&1) | sed 's/^.*samtools //; s/Using.*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    """
+    touch ${prefix}.bam
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        bwamem2: \$(echo \$(bwa-mem2 version 2>&1) | sed 's/.* //')
+        samtools: \$(echo \$(samtools --version 2>&1) | sed 's/^.*samtools //; s/Using.*\$//')
+    END_VERSIONS
+    """
+}
+process CUSTOM_DUMPSOFTWAREVERSIONS {
+    label 'process_single'
+
+    // Requires `pyyaml` which does not have a dedicated container but is in the MultiQC container
+    conda "bioconda::multiqc=1.14"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/multiqc:1.14--pyhdfd78af_0' :
+        'quay.io/biocontainers/multiqc:1.14--pyhdfd78af_0' }"
+
+    input:
+    path versions
+
+    output:
+    path "software_versions.yml"    , emit: yml
+    path "software_versions_mqc.yml", emit: mqc_yml
+    path "versions.yml"             , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    template 'dumpsoftwareversions.py'
+}
+process GATK4_APPLYBQSR {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(input), path(input_index), path(bqsr_table), path(intervals)
+    path  fasta
+    path  fai
+    path  dict
+
+    output:
+    tuple val(meta), path("*.bam") , emit: bam,  optional: true
+    tuple val(meta), path("*.cram"), emit: cram, optional: true
+    path "versions.yml"            , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def interval_command = (intervals && !intervals.name.contains("NOFILE")) ? "--intervals $intervals" : ""
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK ApplyBQSR] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        ApplyBQSR \\
+        --input $input \\
+        --output ${prefix}.${input.getExtension()} \\
+        --reference $fasta \\
+        --bqsr-recal-file $bqsr_table \\
+        $interval_command \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_APPLYVQSR {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(vcf), path(vcf_tbi), path(recal), path(recal_index), path(tranches)
+    path  fasta
+    path  fai
+    path  dict
+
+    output:
+    tuple val(meta), path("*.vcf.gz"), emit: vcf
+    tuple val(meta), path("*.tbi")   , emit: tbi
+    path "versions.yml"              , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def reference_command = fasta ? "--reference $fasta" : ''
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK ApplyVQSR] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        ApplyVQSR \\
+        --variant ${vcf} \\
+        --output ${prefix}.vcf.gz \\
+        $reference_command \\
+        --tranches-file $tranches \\
+        --recal-file $recal \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+    prefix   = task.ext.prefix ?: "${meta.id}"
+    """
+    touch ${prefix}.vcf.gz
+    touch ${prefix}.vcf.gz.tbi
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_BASERECALIBRATOR {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(input), path(input_index), path(intervals), path(known_sites), path(known_sites_tbi)
+    path  fasta
+    path  fai
+    path  dict
+    //path  known_sites
+    //path  known_sites_tbi
+
+    output:
+    tuple val(meta), path("*.table"), emit: table
+    path "versions.yml"             , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def interval_command = (intervals && !intervals.name.contains("NOFILE")) ? "--intervals $intervals" : ""
+    def sites_command = known_sites.collect{"--known-sites $it"}.join(' ')
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK BaseRecalibrator] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        BaseRecalibrator  \\
+        --input $input \\
+        --output ${prefix}.table \\
+        --reference $fasta \\
+        $interval_command \\
+        $sites_command \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_CREATESEQUENCEDICTIONARY {
+    tag "$fasta"
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(fasta)
+
+    output:
+    tuple val(meta), path('*.dict')  , emit: dict
+    path "versions.yml"              , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+
+    def avail_mem = 6144
+    if (!task.memory) {
+        log.info '[GATK CreateSequenceDictionary] Available memory not known - defaulting to 6GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        CreateSequenceDictionary \\
+        --REFERENCE $fasta \\
+        --URI $fasta \\
+        --TMP_DIR . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+    """
+    touch ${fasta.baseName}.dict
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_GENOMICSDBIMPORT {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(vcf), path(tbi), path(interval_file), val(interval_value), path(wspace)
+    val   run_intlist
+    val   run_updatewspace
+    val   input_map
+
+    output:
+    //tuple val(meta), path("$prefix")        , optional:true, emit: genomicsdb
+    tuple val(meta), path("population")      , emit: genomicsdb
+    tuple val(meta), path("$updated_db")    , optional:true, emit: updatedb
+    tuple val(meta), path("*.interval_list"), optional:true, emit: intervallist
+    path "versions.yml"                                    , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args   ?: ''
+    def prefix   = task.ext.prefix ?: "${meta.id}"
+
+    // settings for running default create gendb mode
+    //input_command = input_map ? "--sample-name-map ${vcf[0]}" : vcf.collect(){"--variant $it"}.join(' ')
+    input_command = vcf.collect(itpth -> "--variant ${itpth}").join(' ')
+    genomicsdb_command = "--genomicsdb-workspace-path population"
+    interval_command = interval_file ? "--intervals ${interval_file}" : "--intervals ${interval_value}"
+    updated_db = ""
+
+    // settings changed for running get intervals list mode if run_intlist is true
+    if (run_intlist) {
+        genomicsdb_command = "--genomicsdb-update-workspace-path ${wspace}"
+        interval_command = "--output-interval-list-to-file ${prefix}.interval_list"
+    }
+
+    // settings changed for running update gendb mode. input_command same as default, update_db forces module to emit the updated gendb
+    if (run_updatewspace) {
+        genomicsdb_command = "--genomicsdb-update-workspace-path ${wspace}"
+        interval_command = ''
+        updated_db = "${wspace}"
+    }
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK GenomicsDBImport] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        GenomicsDBImport \\
+        $input_command \\
+        $genomicsdb_command \\
+        $interval_command \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+     
+    prefix   = task.ext.prefix ?: "${meta.id}"
+
+    genomicsdb_command = "--genomicsdb-workspace-path ${prefix}"
+    interval_command = interval_file ? "--intervals ${interval_file}" : "--intervals ${interval_value}"
+    updated_db = ""
+
+    // settings changed for running get intervals list mode if run_intlist is true
+    if (run_intlist) {
+        genomicsdb_command = "--genomicsdb-update-workspace-path ${wspace}"
+        interval_command = "--output-interval-list-to-file ${prefix}.interval_list"
+    }
+
+    // settings changed for running update gendb mode. input_command same as default, update_db forces module to emit the updated gendb
+    if (run_updatewspace) {
+        genomicsdb_command = "--genomicsdb-update-workspace-path ${wspace}"
+        interval_command = ''
+        updated_db = "${wspace}"
+    }
+
+    def stub_genomicsdb = genomicsdb_command == "--genomicsdb-workspace-path ${prefix}" ? "touch ${prefix}" : ""
+    def stub_interval   = interval_command == "--output-interval-list-to-file ${prefix}.interval_list" ? "touch ${prefix}.interval_list" : ""
+    def stub_update     = updated_db != "" ? "touch ${wspace}" : ""
+
+    """
+    ${stub_genomicsdb}
+    ${stub_interval}
+    ${stub_update}
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_GENOTYPEGVCFS {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+    //stageInMode='copy'
+    
+    input:
+    tuple val(meta), path(gvcf), path(gvcf_index), val(intervals), path(intervals_index)
+    //tuple val(meta), path(gvcf), path(gvcf_index), val(intervals)
+    path  fasta
+    path  fai
+    path  dict
+    //path  dbsnp
+    //path  dbsnp_tbi
+
+    output:
+    tuple val(meta), path("*.vcf.gz"), emit: vcf
+    tuple val(meta), path("*.tbi")   , emit: tbi
+    path  "versions.yml"             , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    //def gvcf_command = gvcf.name.endsWith(".vcf") || gvcf.name.endsWith(".vcf.gz") ? "$gvcf" : "gendb://$gvcf"
+    //def dbsnp_command = (dbsnp && !dbsnp.name.contains("NOFILE")) ? "--dbsnp $dbsnp" : ""
+    def interval_command =  (intervals && intervals_index.name.contains("NOFILE")) ? "--intervals ${intervals}" : "--intervals ${intervals_index}"
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK GenotypeGVCFs] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+
+    //$dbsnp_command \\
+    """
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        GenotypeGVCFs \\
+        -V gendb://$gvcf \\
+        --output ${prefix}.vcf.gz \\
+        --reference $fasta \\
+        $interval_command \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+
+    """
+    touch ${prefix}.vcf.gz
+    touch ${prefix}.vcf.gz.tbi
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_HAPLOTYPECALLER {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "bioconda::gatk4=4.4.0.0"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(input), path(input_index), path(intervals), path(dragstr_model)
+    path  fasta
+    path  fai
+    path  dict
+    path  dbsnp
+    path  dbsnp_tbi
+
+    output:
+    tuple val(meta), path("*.vcf.gz")       , emit: vcf
+    tuple val(meta), path("*.tbi")          , emit: tbi
+    tuple val(meta), path("*.realigned.bam"), optional:true, emit: bam
+    path "versions.yml"                     , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def dbsnp_command = (dbsnp && !dbsnp.name.contains("NOFILE")) ? "--dbsnp $dbsnp" : ""
+    def interval_command = (intervals && !intervals.name.contains("NOFILE")) ? "--intervals $intervals" : ""
+    def dragstr_command = (dragstr_model && !dragstr_model.contains("NOFILE")) ? "--dragstr-params-path $dragstr_model" : ""
+    def bamout_command = args.contains("--bam-writer-type") ? "--bam-output ${prefix.replaceAll('.g\\s*$', '')}.realigned.bam" : ""
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK HaplotypeCaller] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M" HaplotypeCaller \\
+        --input $input \\
+        --output ${prefix}.vcf.gz \\
+        --reference $fasta \\
+        $dbsnp_command \\
+        $interval_command \\
+        $bamout_command \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+//del "$dragstr_command \\"
+    stub:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def bamout_command = args.contains("--bam-writer-type") ? "--bam-output ${prefix.replaceAll('.g\\s*$', '')}.realigned.bam" : ""
+
+    def stub_realigned_bam = bamout_command ? "touch ${prefix.replaceAll('.g\\s*$', '')}.realigned.bam" : ""
+    """
+    touch ${prefix}.vcf.gz
+    touch ${prefix}.vcf.gz.tbi
+    ${stub_realigned_bam}
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_INDEXFEATUREFILE {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(feature_file)
+
+    output:
+    tuple val(meta), path("*.{tbi,idx}"), emit: index
+    path  "versions.yml"                , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK IndexFeatureFile] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        IndexFeatureFile \\
+        --input $feature_file \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_SELECTVARIANTS {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(vcf), path(vcf_idx), path (intervals)
+
+    output:
+    tuple val(meta), path("*.selectvariants.vcf.gz")       , emit: vcf
+    tuple val(meta), path("*.selectvariants.vcf.gz.tbi")   , emit: tbi
+    path "versions.yml"		                               , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def interval = (intervals && !intervals.name.contains("NOFILE")) ? "--intervals ${intervals}" : ""
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK SelectVariants] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M" SelectVariants \\
+        --variant $vcf \\
+        --output ${prefix}.selectvariants.vcf.gz \\
+        $interval \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    """
+    touch ${prefix}.selectvariants.vcf.gz
+    touch ${prefix}.selectvariants.vcf.gz.tbi
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_VARIANTFILTRATION {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(vcf), path(tbi)
+    tuple val(meta2), path(fasta)
+    tuple val(meta3), path(fai)
+    tuple val(meta4), path(dict)
+
+    output:
+    tuple val(meta), path("*.vcf.gz"), emit: vcf
+    tuple val(meta), path("*.tbi")   , emit: tbi
+    path "versions.yml"		         , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK VariantFiltration] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M" VariantFiltration \\
+        --variant $vcf \\
+        --output ${prefix}.vcf.gz \\
+        --reference $fasta \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+    stub:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    """
+    touch ${prefix}.vcf.gz
+    touch ${prefix}.vcf.gz.tbi
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_VARIANTRECALIBRATOR {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${'https://singularity/gatk4withr'}"
+    //container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+    //    'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+    //    'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(vcf), path(tbi) // input vcf and tbi of variants to recalibrate
+    path resource_vcf   // resource vcf
+    path resource_tbi   // resource tbi
+    //val labels          // string (or list of strings) containing dedicated resource labels already formatted with '--resource:' tag
+    path  fasta
+    path  fai
+    path  dict
+
+    output:
+    tuple val(meta), path("*.recal")   , emit: recal
+    tuple val(meta), path("*.idx")     , emit: idx
+    tuple val(meta), path("*.tranches"), emit: tranches
+    tuple val(meta), path("*.R")       , optional:true, emit: plots
+    path "versions.yml"                , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def res1 = (task.ext.resource1 && resource_vcf[0]) ? "${task.ext.resource1} ${resource_vcf[0]}": ''
+    def res2 = (task.ext.resource2 && resource_vcf[1]) ? "${task.ext.resource2} ${resource_vcf[1]}": ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def reference_command = fasta ? "--reference $fasta " : ''
+    //def labels_command = labels.join(' ')
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK VariantRecalibrator] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        VariantRecalibrator \\
+        --variant $vcf \\
+        --output ${prefix}.recal \\
+        --tranches-file ${prefix}.tranches \\
+        --rscript-file ${prefix}.R \\
+        $reference_command \\
+        $res1 \\
+        $res2 \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+    prefix   = task.ext.prefix ?: "${meta.id}"
+    """
+    touch ${prefix}.recal
+    touch ${prefix}.idx
+    touch ${prefix}.tranches
+    touch ${prefix}plots.R
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process GATK4_INDEXFEATUREFILE_GCVF {
+    //tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/gatk4:4.4.0.0--py36hdfd78af_0':
+        'biocontainers/gatk4:4.4.0.0--py36hdfd78af_0' }"
+
+    input:
+    tuple  path(feature_file)
+
+    output:
+    tuple  path ("*.tbi"), emit: tbi
+    path  "versions.yml"                , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[GATK IndexFeatureFile] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    gatk --java-options "-Xmx${avail_mem}M -XX:-UsePerfData" \\
+        IndexFeatureFile \\
+        --input $feature_file \\
+        --tmp-dir . \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        gatk4: \$(echo \$(gatk --version 2>&1) | sed 's/^.*(GATK) v//; s/ .*\$//')
+    END_VERSIONS
+    """
+}
+process PICARD_ADDORREPLACEREADGROUPS {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/picard:3.1.0--hdfd78af_0' :
+        'biocontainers/picard:3.1.0--hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(bam)
+
+    output:
+    tuple val(meta), path("*.bam"), emit: bam
+    tuple val(meta), path("*.bai"), emit: bai,     optional: true
+    path "versions.yml"           , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args        ?: ''
+    def prefix = task.ext.prefix    ?: "${meta.id}"
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[Picard AddOrReplaceReadGroups] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+
+    if ("$bam" == "${prefix}.bam") error "Input and output names are the same, use \"task.ext.prefix\" to disambiguate!"
+
+    """
+    picard \\
+        -Xmx${avail_mem}M \\
+        AddOrReplaceReadGroups \\
+        $args \\
+        --INPUT ${bam} \\
+        --OUTPUT ${prefix}.bam
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        picard: \$(picard AddOrReplaceReadGroups --version 2>&1 | grep -o 'Version:.*' | cut -f2- -d:)
+    END_VERSIONS
+    """
+
+    stub:
+    def prefix = task.ext.prefix    ?: "${meta.id}"
+
+    if ("$bam" == "${prefix}.bam") error "Input and output names are the same, use \"task.ext.prefix\" to disambiguate!"
+    """
+    touch ${prefix}.bam
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        picard: \$(picard AddOrReplaceReadGroups --version 2>&1 | grep -o 'Version:.*' | cut -f2- -d:)
+    END_VERSIONS
+    """
+}
+process PICARD_COLLECTINSERTSIZEMETRICS {
+    tag "$meta.id"
+    label 'process_single'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/picard:3.1.0--hdfd78af_0' :
+        'biocontainers/picard:3.1.0--hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(bam)
+
+    output:
+    tuple val(meta), path("*.txt"), emit: metrics
+    tuple val(meta), path("*.pdf"), emit: histogram
+    path "versions.yml"           , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[Picard CollectInsertSizeMetrics] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    picard \\
+        -Xmx${avail_mem}M \\
+        CollectInsertSizeMetrics \\
+        $args \\
+        --INPUT $bam \\
+        --OUTPUT ${prefix}.txt \\
+        --Histogram_FILE ${prefix}.pdf \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        picard: \$(picard CollectInsertSizeMetrics --version 2>&1 | grep -o 'Version:.*' | cut -f2- -d:)
+    END_VERSIONS
+    """
+
+
+    stub:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    """
+    touch ${prefix}.pdf
+    touch ${prefix}.txt
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        picard: \$(picard CollectInsertSizeMetrics --version 2>&1 | grep -o 'Version:.*' | cut -f2- -d:)
+    END_VERSIONS
+    """
+
+
+
+}
+process PICARD_COLLECTMULTIPLEMETRICS {
+    tag "$meta.id"
+    label 'process_single'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/picard:3.1.0--hdfd78af_0' :
+        'biocontainers/picard:3.1.0--hdfd78af_0' }"
+
+    input:
+    tuple val(meta) , path(bam), path(bai)
+    tuple val(meta2), path(fasta)
+    tuple val(meta3), path(fai)
+
+    output:
+    tuple val(meta), path("*_metrics"), emit: metrics
+    tuple val(meta), path("*.pdf")    , emit: pdf, optional: true
+    path  "versions.yml"              , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def reference = fasta ? "--REFERENCE_SEQUENCE ${fasta}" : ""
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[Picard CollectMultipleMetrics] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+    """
+    picard \\
+        -Xmx${avail_mem}M \\
+        CollectMultipleMetrics \\
+        $args \\
+        --INPUT $bam \\
+        --OUTPUT ${prefix}.CollectMultipleMetrics \\
+        $reference
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        picard: \$(picard CollectMultipleMetrics --version 2>&1 | grep -o 'Version.*' | cut -f2- -d:)
+    END_VERSIONS
+    """
+
+    stub:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    """
+    touch ${prefix}.CollectMultipleMetrics.alignment_summary_metrics
+    touch ${prefix}.CollectMultipleMetrics.insert_size_metrics
+    touch ${prefix}.CollectMultipleMetrics.quality_distribution.pdf
+    touch ${prefix}.CollectMultipleMetrics.base_distribution_by_cycle_metrics
+    touch ${prefix}.CollectMultipleMetrics.quality_by_cycle_metrics
+    touch ${prefix}.CollectMultipleMetrics.read_length_histogram.pdf
+    touch ${prefix}.CollectMultipleMetrics.base_distribution_by_cycle.pdf
+    touch ${prefix}.CollectMultipleMetrics.quality_by_cycle.pdf
+    touch ${prefix}.CollectMultipleMetrics.insert_size_histogram.pdf
+    touch ${prefix}.CollectMultipleMetrics.quality_distribution_metrics
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        picard: \$(echo \$(picard CollectMultipleMetrics --version 2>&1) | grep -o 'Version:.*' | cut -f2- -d:)
+    END_VERSIONS
+    """
+}
+process PICARD_MARKDUPLICATES {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/picard:3.1.0--hdfd78af_0' :
+        'biocontainers/picard:3.1.0--hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(bam)
+    tuple val(meta2), path(fasta)
+    tuple val(meta3), path(fai)
+
+    output:
+    tuple val(meta), path("*.bam")        , emit: bam
+    tuple val(meta), path("*.bai")        , optional:true, emit: bai
+    tuple val(meta), path("*.metrics.txt"), emit: metrics
+    path  "versions.yml"                  , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[Picard MarkDuplicates] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+
+    if ("$bam" == "${prefix}.bam") error "Input and output names are the same, use \"task.ext.prefix\" to disambiguate!"
+
+    """
+    picard \\
+        -Xmx${avail_mem}M \\
+        MarkDuplicates \\
+        $args \\
+        --INPUT $bam \\
+        --OUTPUT ${prefix}.bam \\
+        --REFERENCE_SEQUENCE $fasta \\
+        --METRICS_FILE ${prefix}.MarkDuplicates.metrics.txt
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        picard: \$(echo \$(picard MarkDuplicates --version 2>&1) | grep -o 'Version:.*' | cut -f2- -d:)
+    END_VERSIONS
+    """
+
+    stub:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    if ("$bam" == "${prefix}.bam") error "Input and output names are the same, use \"task.ext.prefix\" to disambiguate!"
+    """
+    touch ${prefix}.bam
+    touch ${prefix}.bam.bai
+    touch ${prefix}.MarkDuplicates.metrics.txt
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        picard: \$(echo \$(picard MarkDuplicates --version 2>&1) | grep -o 'Version:.*' | cut -f2- -d:)
+    END_VERSIONS
+    """
+}
+process PICARD_SORTSAM {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/picard:3.1.0--hdfd78af_0' :
+        'biocontainers/picard:3.1.0--hdfd78af_0' }"
+
+    input:
+    tuple val(meta), path(bam)
+    val sort_order
+
+    output:
+    tuple val(meta), path("*.bam"), emit: bam
+    path "versions.yml"                  , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def avail_mem = 3072
+    if (!task.memory) {
+        log.info '[Picard SortSam] Available memory not known - defaulting to 3GB. Specify process memory requirements to change this.'
+    } else {
+        avail_mem = (task.memory.mega*0.8).intValue()
+    }
+
+    if ("$bam" == "${prefix}.bam") error "Input and output names are the same, use \"task.ext.prefix\" to disambiguate!"
+
+    """
+    picard \\
+        SortSam \\
+        -Xmx${avail_mem}M \\
+        --INPUT $bam \\
+        --OUTPUT ${prefix}.bam \\
+        --SORT_ORDER $sort_order \\
+        --TMP_DIR .
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        picard: \$(picard SortSam --version 2>&1 | grep -o 'Version:.*' | cut -f2- -d:)
+    END_VERSIONS
+    """
+}
+process PLINK_EXTRACT {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/plink:1.90b6.21--h779adbc_1' :
+        'biocontainers/plink:1.90b6.21--h779adbc_1' }"
+
+    input:
+    tuple val(meta), path(vcf), path(tbi), val(chrnum), path(prunein)
+
+    output:
+    tuple val(meta), path("*.bed"), emit: bed
+    tuple val(meta), path("*.bim"), emit: bim
+    tuple val(meta), path("*.fam"), emit: fam
+    path "versions.yml"           , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    //if( "$bed" == "${prefix}.bed" ) error "Input and output names are the same, use \"task.ext.prefix\" to disambiguate!"
+    
+    """
+    chrn=\$(seq -s, 1 $chrnum)
+    plink \\
+        --vcf $vcf \\
+        --extract $prunein \\
+        --threads $task.cpus \\
+        --make-bed \\
+        --out $prefix \\
+        --chr \$chrn \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        plink: \$(echo \$(plink --version) | sed 's/^PLINK v//;s/64.*//')
+    END_VERSIONS
+    """
+}
+
+process PLINK_INDEP {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/plink:1.90b6.21--h779adbc_1':
+        'biocontainers/plink:1.90b6.21--h779adbc_1' }"
+
+    input:
+    tuple val(meta), path(vcf), path(tbi), val(chrnum)
+    //val(window_size)
+    //val(variant_count)
+    //val(variance_inflation_factor)
+
+    output:
+    tuple val(meta), path("*.prune.in")                    , emit: prunein
+    tuple val(meta), path("*.prune.out")                   , emit: pruneout
+    tuple val(meta), path("*.nosex")                       , emit: prunenosex
+    tuple val(meta), path("*.log")                         , emit: prunelog
+    path "versions.yml"                                    , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    //    --bed ${bed}  \\
+    //    --bim ${bim}  \\
+    //    --fam ${fam}  \\
+
+    """
+    chrn=\$(seq -s, 1 $chrnum)
+    plink \\
+        --vcf $vcf \\
+        --threads $task.cpus \\
+        --indep-pairwise ${task.ext.window_size} ${task.ext.variant_count} ${task.ext.variance_inflation_factor} \\
+        --out $prefix \\
+        --chr \$chrn \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        plink: \$(echo \$(plink --version) | sed 's/^PLINK v//;s/64.*//')
+    END_VERSIONS
+    """
+}
+process QUALIMAP_BAMQC {
+    tag "$meta.id"
+    label 'process_medium'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/qualimap:2.2.2d--1' :
+        'biocontainers/qualimap:2.2.2d--1' }"
+
+    input:
+    tuple val(meta), path(bam)
+    path gff
+
+    output:
+    tuple val(meta), path("${prefix}"), emit: results
+    path  "versions.yml"              , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args   ?: ''
+    prefix   = task.ext.prefix ?: "${meta.id}"
+
+    def collect_pairs = meta.single_end ? '' : '--collect-overlap-pairs'
+    def memory = (task.memory.mega*0.8).intValue() + 'M'
+    def regions = (gff && !gff.name.contains("NOFILE")) ? "--gff $gff" : ''
+    def strandedness = 'non-strand-specific'
+    if (meta.strandedness == 'forward') {
+        strandedness = 'strand-specific-forward'
+    } else if (meta.strandedness == 'reverse') {
+        strandedness = 'strand-specific-reverse'
+    }
+    """
+    unset DISPLAY
+    mkdir -p tmp
+    export _JAVA_OPTIONS=-Djava.io.tmpdir=./tmp
+    qualimap \\
+        --java-mem-size=$memory \\
+        bamqc \\
+        $args \\
+        -bam $bam \\
+        $regions \\
+        -p $strandedness \\
+        $collect_pairs \\
+        -outdir $prefix \\
+        -nt $task.cpus
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        qualimap: \$(echo \$(qualimap 2>&1) | sed 's/^.*QualiMap v.//; s/Built.*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+    prefix = task.ext.suffix ? "${meta.id}${task.ext.suffix}" : "${meta.id}"
+    """
+    mkdir -p $prefix/css
+    mkdir $prefix/images_qualimapReport
+    mkdir $prefix/raw_data_qualimapReport
+    cd $prefix/css
+    touch agogo.css
+    touch basic.css
+    touch bgtop.png
+    touch comment-close.png
+    touch doctools.js
+    touch down-pressed.png
+    touch jquery.js
+    touch plus.png
+    touch qualimap_logo_small.png
+    touch searchtools.js
+    touch up.png
+    touch websupport.js
+    touch ajax-loader.gif
+    touch bgfooter.png
+    touch comment-bright.png
+    touch comment.png
+    touch down.png
+    touch file.png
+    touch minus.png
+    touch pygments.css
+    touch report.css
+    touch underscore.js
+    touch up-pressed.png
+    cd ../images_qualimapReport/
+    touch genome_coverage_0to50_histogram.png
+    touch genome_coverage_quotes.png
+    touch genome_insert_size_across_reference.png
+    touch genome_mapping_quality_histogram.png
+    touch genome_uniq_read_starts_histogram.png
+    touch genome_coverage_across_reference.png
+    touch genome_gc_content_per_window.png
+    touch genome_insert_size_histogram.png
+    touch genome_reads_clipping_profile.png
+    touch genome_coverage_histogram.png
+    touch genome_homopolymer_indels.png
+    touch genome_mapping_quality_across_reference.png
+    touch genome_reads_content_per_read_position.png
+    cd ../raw_data_qualimapReport
+    touch coverage_across_reference.txt
+    touch genome_fraction_coverage.txt
+    touch insert_size_histogram.txt
+    touch mapped_reads_nucleotide_content.txt
+    touch coverage_histogram.txt
+    touch homopolymer_indels.txt
+    touch mapped_reads_clipping_profile.txt
+    touch mapping_quality_across_reference.txt
+    touch duplication_rate_histogram.txt
+    touch insert_size_across_reference.txt
+    touch mapped_reads_gc-content_distribution.txt
+    touch mapping_quality_histogram.txt
+    cd ../
+    touch genome_results.txt
+    touch qualimapReport.html
+    cd ../
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        qualimap: \$(echo \$(qualimap 2>&1) | sed 's/^.*QualiMap v.//; s/Built.*\$//')
+    END_VERSIONS
+    """
+}
+process SAMTOOLS_DEPTH {
+    tag "$meta1.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/samtools:1.17--h00cdaf9_0' :
+        'biocontainers/samtools:1.17--h00cdaf9_0' }"
+
+    input:
+    tuple val(meta1), path(bam)
+    tuple val(meta2), path(intervals)
+
+    output:
+    tuple val(meta1), path("*.tsv"), emit: tsv
+    path "versions.yml"           , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def prefix = task.ext.prefix ?: "${meta1.id}"
+    def positions = (intervals && !intervals.name.contains("NOFILE")) ? "-b ${intervals}" : ""
+    """
+    samtools \\
+        depth \\
+        --threads ${task.cpus-1} \\
+        $args \\
+        $positions \\
+        -o ${prefix}.tsv \\
+        $bam
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        samtools: \$(echo \$(samtools --version 2>&1) | sed 's/^.*samtools //; s/Using.*\$//')
+    END_VERSIONS
+    """
+}
+process SAMTOOLS_FAIDX {
+    tag "$fasta"
+    label 'process_single'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/samtools:1.17--h00cdaf9_0' :
+        'biocontainers/samtools:1.17--h00cdaf9_0' }"
+
+    input:
+    tuple val(meta), path(fasta)
+    //tuple val(meta2), path(fai)
+
+    output:
+    tuple val(meta), path ("*.{fa,fasta}") , emit: fa, optional: true
+    tuple val(meta), path ("*.fai")        , emit: fai
+    tuple val(meta), path ("*.gzi")        , emit: gzi, optional: true
+    path "versions.yml"                    , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    """
+    samtools \\
+        faidx \\
+        $fasta \\
+        $args
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        samtools: \$(echo \$(samtools --version 2>&1) | sed 's/^.*samtools //; s/Using.*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+    def match = (task.ext.args =~ /-o(?:utput)?\s(.*)\s?/).findAll()
+    def fastacmd = match[0] ? "touch ${match[0][1]}" : ''
+    """
+    ${fastacmd}
+    touch ${fasta}.fai
+
+    cat <<-END_VERSIONS > versions.yml
+
+    "${task.process}":
+        samtools: \$(echo \$(samtools --version 2>&1) | sed 's/^.*samtools //; s/Using.*\$//')
+    END_VERSIONS
+    """
+}
+process SAMTOOLS_INDEX {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/samtools:1.17--h00cdaf9_0' :
+        'biocontainers/samtools:1.17--h00cdaf9_0' }"
+
+    input:
+    tuple val(meta), path(input)
+
+    output:
+    tuple val(meta), path("*.bai") , optional:true, emit: bai
+    tuple val(meta), path("*.csi") , optional:true, emit: csi
+    tuple val(meta), path("*.crai"), optional:true, emit: crai
+    path  "versions.yml"           , emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    """
+    samtools \\
+        index \\
+        -@ ${task.cpus-1} \\
+        $args \\
+        $input
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        samtools: \$(echo \$(samtools --version 2>&1) | sed 's/^.*samtools //; s/Using.*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+    """
+    touch ${input}.bai
+    touch ${input}.crai
+    touch ${input}.csi
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        samtools: \$(echo \$(samtools --version 2>&1) | sed 's/^.*samtools //; s/Using.*\$//')
+    END_VERSIONS
+    """
+}
+process SAMTOOLS_VIEW {
+    tag "$meta.id"
+    label 'process_low'
+
+    conda "${moduleDir}/environment.yml"
+    container "${ workflow.containerEngine == 'singularity' && !task.ext.singularity_pull_docker_container ?
+        'https://depot.galaxyproject.org/singularity/samtools:1.17--h00cdaf9_0' :
+        'biocontainers/samtools:1.17--h00cdaf9_0' }"
+
+    input:
+    tuple val(meta), path(input), path(index)
+    tuple val(meta2), path(fasta)
+    path qname
+
+    output:
+    tuple val(meta), path("*.bam"),  emit: bam,     optional: true
+    tuple val(meta), path("*.cram"), emit: cram,    optional: true
+    tuple val(meta), path("*.sam"),  emit: sam,     optional: true
+    tuple val(meta), path("*.bai"),  emit: bai,     optional: true
+    tuple val(meta), path("*.csi"),  emit: csi,     optional: true
+    tuple val(meta), path("*.crai"), emit: crai,    optional: true
+    path  "versions.yml",            emit: versions
+
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+    def args = task.ext.args ?: ''
+    def args2 = task.ext.args2 ?: ''
+    def args3 = task.ext.args3 ?: ''
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    def reference = fasta ? "--reference ${fasta}" : ""
+    def readnames = (qname && !qname.name.contains("NOFILE")) ? "--qname-file ${qname}": ""
+    def file_type = args.contains("--output-fmt sam") ? "sam" :
+                    args.contains("--output-fmt bam") ? "bam" :
+                    args.contains("--output-fmt cram") ? "cram" :
+                    input.getExtension()
+    if ("$input" == "${prefix}${args3}.${file_type}") error "Input and output names are the same, use \"task.ext.prefix\" to disambiguate!"
+    """
+    samtools \\
+        view \\
+        --threads ${task.cpus-1} \\
+        ${reference} \\
+        ${readnames} \\
+        $args \\
+        -o ${prefix}${args3}.${file_type} \\
+        $input \\
+        $args2
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        samtools: \$(echo \$(samtools --version 2>&1) | sed 's/^.*samtools //; s/Using.*\$//')
+    END_VERSIONS
+    """
+
+    stub:
+    def prefix = task.ext.prefix ?: "${meta.id}"
+    """
+    touch ${prefix}.bam
+    touch ${prefix}.cram
+
+    cat <<-END_VERSIONS > versions.yml
+    "${task.process}":
+        samtools: \$(echo \$(samtools --version 2>&1) | sed 's/^.*samtools //; s/Using.*\$//')
+    END_VERSIONS
+    """
+}
+#!/opt/conda/envs/emmax-anno/bin/Rscript --verbose
+args <- commandArgs(TRUE)
+
+eigenvec_path = args[1]
+
+names<-strsplit(eigenvec_path,"/")
+eigenvec_names = names[[1]][length(names[[1]])]
+eigenvec_names = strsplit(eigenvec_names,"\\.")[[1]][1]
+
+
+eigenvec_data = read.table(eigenvec_path,header=F)
+eigenvec_data = eigenvec_data[,c(1,2,3,4,5)]
+
+names(eigenvec_data) = c("ID1","ID2","pca1","pca2","pca3")
+
+
+png( 
+  filename = paste(eigenvec_names,'png',sep='.'),
+  width = 1000,
+  height = 800,
+  units = 'px',
+  bg = 'white'
+)
+plot(eigenvec_data$pca1,eigenvec_data$pca2,pch = c(8),col = c("purple"),main="PCA",xlab="pca1",ylab = "pca2")
+dev.off()
+
+print(paste(eigenvec_names,'png',sep='.'))
+
+
+#ggsave(paste(eigenvec_names,'png',sep='.'),p,width=10,height = 10,dpi=300)
+#ggsave(paste(eigenvec_names,'pdf',sep='.'),p,width=10,height = 10,dpi=300)
+#!/opt/conda/envs/emmax-anno/bin/Rscript --verbose
+library("CMplot")
+library("stringr")
+
+args <- commandArgs(TRUE)
+assocresultfile <- args[1]
+names<-strsplit(assocresultfile,"/")
+name<-names[[1]][length(names[[1]])]
+
+assocresult<-read.table(assocresultfile,header=F)
+assocresult[,c(5,6)]<-as.data.frame(str_split_fixed(assocresult[,1],":",2))
+
+assocplot<-assocresult[c(1,5,6,4)]
+colnames(assocplot)<-c("ID","chr","position","P")
+thresholds <- c(0.01,0.05)/nrow(assocplot)
+
+sigresult <- assocplot[which(assocplot[,"P"]<thresholds[2]),]
+write.table(sigresult,paste0(assocresultfile,"_significant.lst"),sep="\t",row.names=F,quote = FALSE,col.names=T)
+
+CMplot(assocplot,
+       plot.type = "m",
+       #chr.labels=paste("Chr",c(1:22,"X","Y"),sep=""),
+       file="jpg",
+       file.name = paste0(name,".manh"),
+       dpi=300,
+       file.output=TRUE,verbose=TRUE,width=14,height=6,
+       threshold =c(thresholds,0.000001), #阈值设定，Bonfferoni法校正=0.01/nrow(Pmap)，通常以1/SNP总数为阈值。
+       threshold.col=c('grey','black','black'),#控制阈值线的颜色，注意要对应
+       threshold.lty = c(1,2,2),#阈值线的类型（7为实线，5为虚线）
+       threshold.lwd = c(1,1,1),#阈值线的宽度，也可以调整对角线的宽度，2最合适）
+       amplify = T,#放大显示~显著性的SNP点
+       signal.cex = c(1,1,1),#设置有效SNP位点的大小,建议选用2/3号为宜
+       signal.pch = c(20,20,20),#设置有效SNP位点的形状，16和19为圆形。
+       signal.col =c("red","darkgreen","skyblue"),#有效SNP位点的颜色
+       chr.den.col=c("darkgreen","yellow","red")#【添加SNP密度】！！！,若不想添加只需要到前一步就可结束
+)
+
+CMplot(assocplot,
+       plot.type="q",
+       threshold = 0.05,
+       conf.int.col=NULL,#绘制QQ图中置信区间的颜色，可以用字符或向量
+       box=TRUE,#是否添加边框
+       file="jpg",
+       file.name = paste0(name,".QQ"),
+       dpi=300,
+       file.output=TRUE,
+       verbose=TRUE,width=10,height=10
+)
+#!/opt/conda/envs/emmax-anno/bin/Rscript --verbose
+args <- commandArgs(TRUE)
+
+eigenvec_path = args[1]
+
+names<-strsplit(eigenvec_path,"/")
+cverror_names = names[[1]][length(names[[1]])]
+cverror_names = strsplit(cverror_names,"\\.")[[1]][1]
+
+
+cverror_data = read.table(eigenvec_path,header=F)
+
+
+names(cverror_data) = c("k","CV")
+
+
+png( 
+  filename = paste(cverror_names,'png',sep='.'),
+  width = 1000,
+  height = 800,
+  units = 'px',
+  bg = 'white'
+)
+plot(cverror_data$k,cverror_data$CV,,type = "b",pch = c(21),col = c("black"),bg = "black",lwd = 2,font = 2,font.lab = 2,font.axis = 2,xlab="K value",ylab="Cross-Validation (CV) errors")
+dev.off()
+
+print(paste(cverror_names,'png',sep='.'))
+
+

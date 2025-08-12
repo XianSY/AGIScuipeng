@@ -1,0 +1,39 @@
+process STURCTURE_VCF_ADDID {
+    tag "${meta.id}"
+    label 'process_single'
+    // Define input channel
+  
+    errorStrategy { task.exitStatus in 150..152 ? 'retry' : 'terminate' }
+
+    maxRetries 10 
+   
+    container "${'https://singularity/admixture'}"
+
+    errorStrategy { task.exitStatus in 150..152 ? 'retry' : 'ignore' } 
+    maxRetries 10
+
+    input:
+    tuple val(meta), path(vcf), path(tbi)
+
+    // Define output files
+    output:
+    tuple val(meta), path("*.vcf.gz") ,path("*.tbi"),env(chrnum),emit: vcf
+    tuple val(meta), env(allctgnum), emit: ctgnum
+    when:
+    task.ext.when == null || task.ext.when
+
+    script:
+
+    """
+        chrnum=\$( bgzip -dc $vcf | awk '{print \$1}' | sort | uniq | grep -v '#' | wc -l)
+	allctgnum=\$(bgzip -dc $vcf | grep -E "^#" | wc -l)
+        bgzip -dc $vcf | awk -v FS='\\t' -v OFS='\\t' '{if(/^#/){print \$0}else{a=\$1;gsub(/[Ctg|Chr]/,"",a);\$3=a":"\$2;print \$0}}' |\
+        bgzip -c > ${meta.id}.vcf.gz
+
+        tabix ${meta.id}.vcf.gz
+
+        echo "chrnum_output=\$chrnum" > ${meta.id}.chrnum.txt
+    """
+
+    
+}

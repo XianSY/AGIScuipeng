@@ -1,0 +1,242 @@
+include { FASTQS     } from '../subworkflows/nf-core/fastqc'
+include { ALIGN      } from '../subworkflows/nf-core/align'
+include { VARIANT    } from '../subworkflows/nf-core/variant'
+include { POPULATION } from '../subworkflows/nf-core/population'
+include { ANNOTATION } from '../subworkflows/nf-core/annotation'
+include { STRUCTURE  } from '../subworkflows/nf-core/structure'
+include { PCA        } from '../subworkflows/nf-core/pca'
+include { GWAS       } from '../subworkflows/nf-core/gwas'
+
+
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    PRINT PARAMS SUMMARY
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+
+include { paramsSummaryLog; paramsSummaryMap } from 'plugin/nf-validation'
+
+def logo = NfcoreTemplate.logo(workflow, params.monochrome_logs)
+def citation = '\n' + WorkflowMain.citation(workflow) + '\n'
+def summary_params = paramsSummaryMap(workflow)
+
+// Print parameter summary log to screen
+log.info logo + paramsSummaryLog(workflow) + citation
+
+WorkflowTest.initialise(params, log)
+
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    CONFIG FILES
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+
+ch_multiqc_config          = Channel.fromPath("$projectDir/assets/multiqc_config.yml", checkIfExists: true)
+ch_multiqc_custom_config   = params.multiqc_config ? Channel.fromPath( params.multiqc_config, checkIfExists: true ) : Channel.empty()
+ch_multiqc_logo            = params.multiqc_logo   ? Channel.fromPath( params.multiqc_logo, checkIfExists: true ) : Channel.empty()
+ch_multiqc_custom_methods_description = params.multiqc_methods_description ? file(params.multiqc_methods_description, checkIfExists: true) : file("$projectDir/assets/methods_description_template.yml", checkIfExists: true)
+
+/*
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    IMPORT LOCAL MODULES/SUBWORKFLOWS
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+*/
+include { SAMTOOLS_INDEX as SAMTOOLS_INDEX_MAPPING         } from '../modules/nf-core/samtools/index/main'
+
+
+
+
+//
+// SUBWORKFLOW: Consisting of a mix of local and nf-core/modules
+//
+include { INPUT_CHECK                      } from '../subworkflows/local/input_check'
+include { INPUT_CHECK as INPUT_CHECK_BAM   } from '../subworkflows/local/input_check'
+     
+
+
+
+
+workflow TEST {
+
+    ch_versions = Channel.empty()
+
+
+    if (params.A=="A"){  
+       
+	INPUT_CHECK (
+        file(params.input)
+   	 )
+ 	ch_versions = ch_versions.mix(INPUT_CHECK.out.versions)
+
+        INPUT_CHECK.out.reads.view()	
+	FASTQS(
+            INPUT_CHECK.out.reads,
+            params.adapter_fasta,
+            params.save_trimmed_fail,
+            params.save_merged
+        )
+
+
+        ch_merge_fastq_files = FASTQS.out.fastqc_clean.map{
+        row -> def sampleParts = row[0].id.tokenize('_')
+            tuple(sampleParts[0],sampleParts[1],row[0].single_end,row[1][0], row[1][1])
+        }.groupTuple()
+
+        ch_versions     = ch_versions.mix((FASTQS.out.versions))
+        ch_merge_fastq_files.view() 
+        ALIGN(
+            ch_merge_fastq_files
+        )
+        ch_fasta_genome_withmeta    = ALIGN.out.fasta_genome_withmeta
+        ch_bam_to_fil               = ALIGN.out.bam_to_fil
+        ch_fasta_genome_withoutmeta = ALIGN.out.fasta_genome_withoutmeta
+       
+ 
+ 	VARIANT(
+            ch_bam_to_fil               ,
+        )
+        
+        POPULATION(
+
+            VARIANT.out.ch_gvcf_dbimport          ,
+            VARIANT.out.ch_tbi_dbimport           ,
+        )
+        
+	ch_vcf_tbi_structure_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+	ch_vcf_tbi_pca_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+        
+        
+        ANNOTATION(
+            POPULATION.out.ch_vcf_tbi_annotable
+        )
+        STRUCTURE(
+           ch_vcf_tbi_structure_vcfaddid
+        )
+	PCA(
+            ch_vcf_tbi_pca_vcfaddid,
+ 	    STRUCTURE.out.ch_plink_indep_prunein
+        )
+        GWAS(
+          POPULATION.out.ch_vcf_tbi_pca_vcfaddid,
+          POPULATION.out.ch_groups_vcf_emmax_groupping,
+          ANNOTATION.out.ch_annoevf_emmax_anno
+	)
+	}
+	else if(params.A == "B"){   
+       
+	ch_merge_fastq_files = channel.fromPath(params.input).splitCsv().map{
+        row -> def sampleParts = row[0].tokenize('_')
+            tuple(sampleParts[0],sampleParts[1],row[1],row[2],row[3])
+        }.groupTuple()
+
+ 
+        ALIGN(
+        
+        ch_merge_fastq_files
+        )
+        ch_bwamem2_mem_bam          = ALIGN.out.bwamem2_mem_bam
+
+        VARIANT(
+                ch_bwamem2_mem_bam          ,
+
+            )
+        
+        POPULATION(
+            VARIANT.out.ch_gvcf_dbimport          ,
+            VARIANT.out.ch_tbi_dbimport           ,
+        )
+        
+        ch_vcf_tbi_structure_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+        ch_vcf_tbi_pca_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+        
+        
+        ANNOTATION(
+            POPULATION.out.ch_vcf_tbi_annotable
+        )
+        STRUCTURE(
+           ch_vcf_tbi_structure_vcfaddid
+        )
+        PCA(
+                ch_vcf_tbi_pca_vcfaddid,
+            STRUCTURE.out.ch_plink_indep_prunein
+            )
+        GWAS(
+          POPULATION.out.ch_vcf_tbi_pca_vcfaddid,
+          POPULATION.out.ch_groups_vcf_emmax_groupping,
+          ANNOTATION.out.ch_annoevf_emmax_anno
+	)
+    }
+	else if (params.A == "C"){
+        
+        ch_bwamem2_men_bam = channel.fromPath(params.input)
+                             .splitCsv()
+                             .map{
+                                row -> def bam=[:]
+                                bam.id = row[0]
+                                tuple(bam,row[1])
+                             }
+ 
+
+        VARIANT(
+            ch_bwamem2_men_bam          ,
+        )
+
+        POPULATION(
+            VARIANT.out.ch_gvcf_dbimport          ,
+            VARIANT.out.ch_tbi_dbimport           ,
+        )
+        
+        ch_vcf_tbi_structure_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+        ch_vcf_tbi_pca_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+
+        ANNOTATION(
+            POPULATION.out.ch_vcf_tbi_annotable
+        )
+        STRUCTURE(
+           ch_vcf_tbi_structure_vcfaddid
+        )
+        PCA(
+            ch_vcf_tbi_pca_vcfaddid,
+            STRUCTURE.out.ch_plink_indep_prunein
+            )
+        GWAS(
+            POPULATION.out.ch_vcf_tbi_pca_vcfaddid,
+            POPULATION.out.ch_groups_vcf_emmax_groupping,
+            ANNOTATION.out.ch_annoevf_emmax_anno
+	        )
+          
+    }else if(params.A=="D"){
+        
+        ch_gvcf_dbimport = channel.fromPath(params.input_gvcf)
+                           .splitCsv()
+                           .collect()
+                           .toList()
+                           .view()
+
+        POPULATION(
+
+            ch_gvcf_dbimport                      ,
+            ch_tbi_dbimport                       
+        )
+        
+        ch_vcf_tbi_structure_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+        ch_vcf_tbi_pca_vcfaddid = POPULATION.out.ch_vcf_tbi_structure_vcfaddid
+
+        ANNOTATION(
+            POPULATION.out.ch_vcf_tbi_annotable
+        )
+        STRUCTURE(
+           ch_vcf_tbi_structure_vcfaddid
+        )
+        PCA(
+            ch_vcf_tbi_pca_vcfaddid,
+            STRUCTURE.out.ch_plink_indep_prunein
+            )
+        GWAS(
+            POPULATION.out.ch_vcf_tbi_pca_vcfaddid,
+            POPULATION.out.ch_groups_vcf_emmax_groupping,
+            ANNOTATION.out.ch_annoevf_emmax_anno
+	        )
+    }        
+}
+

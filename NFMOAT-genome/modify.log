@@ -1,0 +1,16 @@
+2024-07-19 首次推送至github github地址 git@github.com:XianSY/OAIP-Genome.git
+
+2024-07-19 测试远程开发分支
+
+2024-07-25 完成subworkflow的分割
+
+2024-07-30 第一个流程分割成功运行，主要还是完整的流程，从头开始允许，只是运用分割后得subworkflow允许，运行成功
+
+
+2024-08-02 第二个分割从variant开始，成功运行，主要是将输入文件变成channel.fromPath(params.input).splitCsv().map{row -> ...}函数进行输入，输入文件见test.B.csv
+
+2024-08-06 第三部分分割完成，首先将上述2024-08-02第二部分的分割从variant部分转移到align开始，第三部分从variant开始，第二部分输入clean fq data 文件test.C.csv，第三部分输入比对后得bam文件test.B.csv，运行成功
+
+2024-08-07 第四部分分割完成，从population开始，输入文件为两个，一个是gvcf文件（见test.D.gvcf.csv）、另一个是tbi文件（见test.D.tbi.csv），修复population subworkflow的bug，运行成功。
+
+2024-08-10 四个部分修改完成
