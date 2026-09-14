@@ -15,11 +15,22 @@ option_list = list(
 opt_parser = OptionParser(option_list = option_list)
 opt        = parse_args(opt_parser)
 
-counts = read.table(opt$gene_counts,sep = " ",row.names = 1,header = T)
+counts = read.table(opt$gene_counts,sep = ",",row.names = 1,header = T)
 
-filter_counts = counts[rowSums(counts)>1,]
+library_size <- colSums(counts)
+cpm <- sweep(
+    counts,
+    2,
+    library_size,
+    FUN="/"
+) * 1000000
 
-zero_filter = filter_counts[rowSums(filter_counts==0) < ncol(filter_counts)*0.95,]
+keep <- rowSums(cpm > 1) >= ncol(cpm)*0.1
+
+
+filter_counts = counts[keep,]
+
+zero_filter = filter_counts
 
 zero_filter$Geneid = row.names(zero_filter)
 zero_filter = zero_filter[,c(length(zero_filter),1:(length(zero_filter)-1))]

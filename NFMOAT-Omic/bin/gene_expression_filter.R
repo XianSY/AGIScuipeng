@@ -20,7 +20,7 @@ option_list = list(
 opt_parse = OptionParser(option_list = option_list)
 opt = parse_args(opt_parse)
 
-expression_data = read.csv(opt$expression,header = T,row.names = 1)
+expression_data = read.csv(opt$expression,header = T,row.names = 1,sep="\t")
 
 
 expression_data_filter = expression_data[rowMeans(expression_data) >0.1,]

@@ -7,6 +7,7 @@ include { VCF_TO_INDENTIFY       } from '../../../modules/local/vcf_to_indentify
 include { VCF_TO_NUM_EQTL        } from '../../../modules/local/vcf_to_num_eqtl'
 include { VCF_TO_BIALLELIC       } from '../../../modules/local/vcf_to_biallelic'
 include { GFF2GTF                } from '../../../modules/local/gff2gtf'
+include { EQTL_RESULTS_FILTER    } from '../../../modules/local/eqtl_results_filter'
 
 
 workflow EQTL{
@@ -53,6 +54,13 @@ workflow EQTL{
         ch_expression_eqtl = GENE_EXPRESSION_FILTER.out.gene_expression_eQTL
 	EQTL_PROCESS(
 	  ch_snp_eqtl,
-	  ch_expression_eqtl
+	  ch_expression_eqtl,
+	  VCF_TO_INDENTIFY.out.eigenvec
 	)
+	EQTL_RESULTS_FILTER(
+            ch_snp_eqtl,
+            EQTL_PROCESS.out.init_eqtl,
+	    ch_expression_eqtl
+
+        )
 }

@@ -1,7 +1,5 @@
 /*
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    VALIDATE INPUTS
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 */
 
 def valid_params = [
@@ -14,9 +12,11 @@ def valid_params = [
 def summary_params = NfcoreSchema.paramsSummaryMap(workflow, params)
 
 // Validate input parameters
+
 WorkflowRnaseq.initialise(params, log, valid_params)
 
 // Check input path parameters to see if they exist
+/*
 checkPathParamList = [
     params.input, params.multiqc_config,
     params.fasta, params.transcript_fasta, params.additional_fasta,
@@ -24,10 +24,11 @@ checkPathParamList = [
     params.ribo_database_manifest, params.splicesites,
     params.star_index, params.hisat2_index, params.rsem_index, params.salmon_index
 ]
-for (param in checkPathParamList) { if (param) { file(param, checkIfExists: true) } }
+*/
+//for (param in checkPathParamList) { if (param) { file(param, checkIfExists: true) } }
 
 // Check mandatory parameters
-if (params.input) { ch_input = file(params.input) } else { exit 1, 'Input samplesheet not specified!' }
+// if (params.input) { ch_input = file(params.input) } else { exit 1, 'Input samplesheet not specified!' }
 
 // Check rRNA databases for sortmerna
 if (params.remove_ribo_rna) {
@@ -67,12 +68,6 @@ if (params.fasta && params.gtf) {
         is_aws_igenome = true
     }
 }
-
-/*
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    CONFIG FILES
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-*/
 
 ch_multiqc_config          = Channel.fromPath("$projectDir/assets/multiqc_config.yml", checkIfExists: true)
 ch_multiqc_custom_config   = params.multiqc_config ? Channel.fromPath( params.multiqc_config, checkIfExists: true ) : Channel.empty()
@@ -190,6 +185,7 @@ workflow RNASEQ {
     start_process = processList[0] //Obtain start process 
 
     if(start_process == "A"){
+	if (params.input) { ch_input = file(params.input) } else { exit 1, 'Input samplesheet not specified!' }
         FASTQC_WORKFLOW(
             ch_input,
             ch_fasta,

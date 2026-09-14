@@ -43,6 +43,13 @@ compare = read.csv(opt$compare_file,header = T)
 gene_exs = read.csv(opt$counts_file,header = T,sep=",",row.names = 1)
 gene_expression = gene_exs
 
+DEG_count = data.frame(
+  DEG_set = character(),
+  DEG_number = integer(),
+  up_regulated = integer(),
+  down_regulated = integer()
+)
+
 for(i in seq(1,length(compare[,1]))){
   deg_sample = group[group$group %in% c(compare[i,2],compare[i,3]),1]
   deg_gene_expression = gene_expression[,colnames(gene_expression) %in% deg_sample]
@@ -56,6 +63,14 @@ for(i in seq(1,length(compare[,1]))){
   results$gene_type[results$log2FoldChange>=1 & results$pvalue<0.05] = "up"
   results$gene_type[results$log2FoldChange<=-1 & results$pvalue<0.05] = "down"
   write.csv(results,file = paste(opt$outdir,compare[i,2],"_vs_",compare[i,3],".csv",sep = ""),quote = F)
+  test_DEG = data.frame(
+  DEG_set = compare[i, 1],
+  DEG_number = sum(!is.na(results$gene_type)),
+  up_regulated = sum(results$gene_type == 'up', na.rm = TRUE),
+  down_regulated = sum(results$gene_type == "down", na.rm = TRUE)
+  )
+  DEG_count = rbind(DEG_count, test_DEG)
+
   png_name = paste(compare[i,1],".png",sep = "")
   pdf_name = paste(compare[i,1],".pdf",sep = "")
   pl = ggplot2::ggplot(data = results, aes(x = log2FoldChange, y = -log10(pvalue))) + 
@@ -67,3 +82,5 @@ for(i in seq(1,length(compare[,1]))){
   ggplot2::ggsave(png_name,pl,width=7,height=7) 
   ggplot2::ggsave(pdf_name,pl,width=7,height=7)
  }
+write.csv(DEG_count,file = paste(opt$outdir,"DEG_counts",".csv",sep = ""),quote = F,row.names = F)
+

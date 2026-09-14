@@ -204,7 +204,7 @@ workflow FASTQC_WORKFLOW{
         //
         if (params.trimmer == 'fastp') {
 
-            umi_reads = reads
+            umi_reads = ch_strand_fastq.auto_strand
             umi_log   = Channel.empty()
             if (params.with_umi && !params.skip_umi_extract) {
                 UMITOOLS_EXTRACT (
@@ -280,9 +280,9 @@ workflow FASTQC_WORKFLOW{
         }
 
             ch_filtered_reads      = trim_reads
-            ch_fastqc_raw_multiqc  = fastqc_raw_zip
-            ch_fastqc_trim_multiqc = fastqc_trim_zip
-            ch_trim_log_multiqc    = trim_json
+            ch_fastqc_raw_multiqc  = fastqc_html
+            //ch_fastqc_trim_multiqc = fastqc_trim_zip
+            ch_trim_log_multiqc    = umi_log
             ch_trim_read_count     = trim_read_count
             ch_multiqc_zip = FASTQC_TRIM.out.zip.collect{it[1]}.ifEmpty([])
        }

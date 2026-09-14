@@ -48,7 +48,7 @@ process FEATURECOUNTS {
     sed -i 's/.markdup.sorted.bam//g' results.featureCounts.txt
     sed -i 's/.sorted.bam//g' results.featureCounts.txt
     sed -i 's/.bam//g' results.featureCounts.txt
-    awk 'BEGIN{ OFS=","} {printf "%s", \$1; for (i=7; i<=NF; i++) printf " %s", \$i; print ""}' results.featureCounts.txt > new_counts.txt
+    awk 'BEGIN{OFS=","} {printf "%s", \$1; for (i=7; i<=NF; i++) printf "%s%s", OFS,\$i; print "\\n"}' results.featureCounts.txt > new_counts.txt
    sed -i 's/gene://g' new_counts.txt 
    sed -i 's/.markdup.sorted.bam//g' new_counts.txt
    sed -i 's/.bam//g' new_counts.txt 

@@ -39,6 +39,13 @@ option_list = list(
     help    = "gene expression of TPM(FPKM RPKM)" 
   ),
   make_option(
+    c("--cvrt_file"),
+    default = NULL,
+    type    = "character",
+    metavar = "path",
+    help    = "genetic covriate" 
+  ),
+  make_option(
     c("--output_name"),
     default = NULL,
     type    = "character",
@@ -71,30 +78,33 @@ gene$fileSliceSize = 2000
 gene$LoadFile(opt$gene_expression)
 
 
-output_file_name_cis = paste0(opt$output_name,"_","cis_eqtl.txt") #顺式
-output_file_name_tra = paste0(opt$output_name,"_","trans_eqtl.txt") #反式 # 只有在高于阈值重要的gene-SNP关联对才会被保存
-pvOutputThreshold_cis = 0.05/(as.numeric(nrow(snp_pos)))
-pvOutputThreshold_tra = 0.05/(as.numeric(nrow(snp_pos)))
+cvrt = SlicedData$new()
+cvrt$fileDelimiter = "\t"
+cvrt$fileOmitCharacters = "NA"
+cvrt$fileSkipRows = 1
+cvrt$fileSkipColumns = 1
+cvrt$fileSliceSize = 20
+cvrt$LoadFile( opt$cvrt_file )
 
-useModel = modelLINEAR # modelANOVA, modelLINEAR, or modelLINEAR_CROSS 
 
-my_eQTL = Matrix_eQTL_main(
-  snps = snps,
-  gene = gene,
-  useModel = useModel,
-  verbose = TRUE,
-  output_file_name = output_file_name_tra,
-  pvOutputThreshold = pvOutputThreshold_tra, 
-  output_file_name.cis = output_file_name_cis,
-  pvOutputThreshold.cis = pvOutputThreshold_cis, 
-  snpspos = snp_pos,
-  genepos = gene_pos,
-  cisDist = 1e6,
-  pvalue.hist = "qqplot",
-  min.pv.by.genesnp = FALSE,
-  noFDRsaveMemory = FALSE
-)
+output_file_name = opt$output_name
 
+useModel = modelLINEAR
+
+pvOutputThreshold = 1e-6
+
+my_eQTL = Matrix_eQTL_engine(  
+                        snps = snps,                         
+                        gene = gene, 
+                        cvrt = cvrt,  
+                        output_file_name = output_file_name,       
+                        pvOutputThreshold = pvOutputThreshold,  
+                        useModel = modelLINEAR,  
+                        errorCovariance = numeric(), 
+                        verbose = TRUE,
+                        pvalue.hist = "qqplot",
+                        min.pv.by.genesnp = FALSE,
+                        noFDRsaveMemory = FALSE)
 
 out = my_eQTL$all$eqtls
 write.table(out,file = "eqtlout.txt")

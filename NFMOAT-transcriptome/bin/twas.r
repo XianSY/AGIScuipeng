@@ -46,8 +46,8 @@ opt = parse_args(opt_parser)
 PFKM = read.table(opt$expression,sep = ",",header = T,row.names = 1)
 #row.names(PFKM) = PFKM[,1]
 #PFKM = PFKM[,-c(1)]
-PFKM = PFKM[rowMeans(PFKM)>0,]
-PFKM = PFKM[rowSums(PFKM==0)<0.95,]
+PFKM = PFKM[rowMeans(PFKM)>0.5,]
+PFKM = PFKM[rowSums(PFKM==0) < 0.95*ncol(PFKM),]
 PFKM_t = data.frame(t(PFKM))
 #colnames(PFKM_t) = row.names(PFKM)
 #PFKM_t = PFKM_t[-1,]
@@ -55,32 +55,38 @@ PFKM_num = data.frame(lapply(PFKM_t,as.numeric))
 PFKM_num$taxa = row.names(PFKM_t)
 PFKM_num = PFKM_num[,c(ncol(PFKM_num),1:ncol(PFKM_num)-1)]
 PFKM$geneid = rownames(PFKM)
-PFKM = PFKM[,c(length(PFKM),1:length(PFKM)-1)]
+PFKM = PFKM[,c(ncol(PFKM),1:ncol(PFKM)-1)]
 
 
 #基因数据加载
 myGM = read.table(opt$gene_GM,header = T,sep=",")
 myGM$geneid = rownames(myGM)
-myGM=myGM[,c(length(myGM),1:length(myGM)-1)]
+myGM=myGM[,c(ncol(myGM),1:ncol(myGM)-1)]
 names(myGM) = c("geneid","chrom","start")
 unique(myGM$chrom)
 
-myGM = merge(myGM,PFKM,by = "geneid")[,c(1,2,3)]
+myGM <- myGM[match(PFKM$geneid,myGM$geneid),]
 
 
 #将TPM值缩放到0-2区间
 Quantile<- apply(PFKM_num[,-1],2,  # 2 indicates it is for column and 1 indicates it is for row
-                 function(A){min_x=as.numeric(quantile(A,0.05)); #quantile函数是指取分位数。A为counts第二列以后的数据，0.05是指取取第二列第0.05的数
+                 function(A){min_x=as.numeric(quantile(A,0.05));
                  max_x=as.numeric(quantile(A,0.95));
                  out<-(2*(A-min_x)/(max_x-min_x));
                  out[out>2]<-2;out[out< 0]<- 0;return(out)})
 Quantile.t <- as.data.frame(Quantile)
-Quantile.t$gene_symbol = PFKM_num[,1]
+Quantile.t$taxa = PFKM_num[,1]
 myGD <-  Quantile.t[,c(ncol(Quantile.t),1: (ncol(Quantile.t)-1))]
 
 
 
 phenotype = read.table(opt$phenotype,sep = ",",header = T)
+# 按myGD顺序重新排列phenotype
+phenotype <- phenotype[
+    match(myGD$taxa, phenotype[,1]),
+]
+
+
 
 for (i in c(2:ncol(phenotype))){
 	trait_name = names(phenotype)[i]

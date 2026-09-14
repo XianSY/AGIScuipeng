@@ -40,9 +40,12 @@ featureCounts = featureCounts[,-c(1:4)]
 RKB = featureCounts$Length / 1000
 featureCounts = featureCounts[,2:length(featureCounts)]/RKB
 featureCounts = featureCounts/colSums(featureCounts)*1e6
+featureCounts = featureCounts[rowMeans(featureCounts)>0.5,]
+featureCounts = featureCounts[rowSums(featureCounts==0)<0.9*ncol(featureCounts),]
+
 featureCounts$geneid = row.names(featureCounts)
 featureCounts = featureCounts[,c(length(featureCounts),1:length(featureCounts)-1)]
-write.table(file = paste(opt$outdir,"TPM.csv",sep = ""),quote = FALSE,featureCounts,row.name = TRUE,sep = ",")
+write.table(file = paste(opt$outdir,"TPM.csv",sep = ""),quote = FALSE,featureCounts,row.name = F,sep = ",")
 group = read.csv(opt$group_file,row.names = 1)
 gene = t(featureCounts[,-1])
 gene.pca = FactoMineR::PCA(gene,ncp = 10,scale.unit = TRUE,graph = FALSE)
